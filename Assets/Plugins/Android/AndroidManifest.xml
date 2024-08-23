@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+          xmlns:tools="http://schemas.android.com/tools"
+          android:installLocation="auto">
+    <!-- Quest 6DoF head tracking. -->
+    <uses-feature android:name="android.hardware.vr.headtracking" android:version="1" android:required="true" />
+
+    <!-- Insight Passthrough. required="true" means the app is MR-only and will not install on
+         a headset without passthrough. Change to "false" to also allow install in VR-only mode. -->
+    <uses-feature android:name="com.oculus.feature.PASSTHROUGH" android:required="true" />
+
+    <!-- Unity Relay + Netcode for GameObjects. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!-- Vivox voice chat. MicPermissions.cs requests RECORD_AUDIO at runtime; if this
+         declaration goes missing the request always fails and voice dies silently. -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+
+    <application
+        android:label="@string/app_name"
+        android:icon="@mipmap/app_icon"
+        android:allowBackup="true">
+        <activity
+            android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen"
+            android:configChanges="locale|fontScale|keyboard|keyboardHidden|mcc|mnc|navigation|orientation|screenLayout|screenSize|smallestScreenSize|touchscreen|uiMode"
+            android:launchMode="singleTask"
+            android:name="com.unity3d.player.UnityPlayerActivity"
+            android:excludeFromRecents="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+                <category android:name="com.oculus.intent.category.VR" />
+            </intent-filter>
+        </activity>
+        <meta-data android:name="unityplayer.SkipPermissionsDialog" android:value="false" />
+
+        <!-- MR apps must not use the black system splash background; "passthrough-contextual"
+             fades the real room in while the app loads. Meta's Project Setup Tool enforces this. -->
+        <meta-data android:name="com.oculus.ossplash.background" android:value="passthrough-contextual" />
+    </application>
+</manifest>

@@ -1,0 +1,22 @@
+
+newmtl Cartoon_2D69FF
+Kd  0.1764706 0.4117647 1
+Ks  0 0 0
+Ka  0 0 0
+d  1
+Ns  0
+illum 2
+
+
+
+
+newmtl Cartoon_FFFFFF
+Kd  1 1 1
+Ks  0 0 0
+Ka  0 0 0
+d  1
+Ns  0
+illum 2
+
+
+
