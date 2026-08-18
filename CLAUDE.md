@@ -1,74 +1,522 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for Claude Code (claude.ai/code) when working in this repository.
 
-## Project
+## What this project is
 
-Multiplayer VR math classroom for Meta Quest. Students and a teacher share a room where they draw 3D shapes in the air with controllers and plot 3D function surfaces, with live voice chat.
+**MRBoardGame2** — a colocated mixed-reality multiplayer board game for Meta Quest. Several
+people stand around a real table in the same physical room, each wearing a headset, and see the
+same virtual board sitting on it. The board is placed and resized by grabbing the air with both
+hands. Passthrough is on, so players see each other's real faces and hands; the only virtual
+parts of another player are two controller cones and a floating nametag.
 
-- **Unity 2023.1.10f1** (exact version — `ProjectSettings/ProjectVersion.txt`), URP
-- **Target**: Android / Quest, ARMv7 + ARM64, minSdk 23 (`AndroidTargetArchitectures: 3`)
-- **Networking**: Netcode for GameObjects 1.5.2 over Unity Relay (host/client, DTLS — no dedicated server) + Vivox 16.3.0 for voice
+The game being built is **Plateau** — plateaus, bridges, gemhearts, chasmfiends. The rules are in
+[`plateauRules.md`](plateauRules.md). **None of those rules are implemented yet.** What exists
+today is the platform: colocation, networking, voice, the shared content frame, the world grab,
+the player ring, the menu, and two mostly-empty game scenes to put a board into.
+
+## Toolchain and targets
+
+| | |
+| --- | --- |
+| Unity | **6000.5.4f1** exactly (`ProjectSettings/ProjectVersion.txt`) |
+| Render pipeline | URP 17.5.0, Linear color space |
+| XR | Meta XR Core SDK **205.0.0** (scoped registry `npm.developer.oculus.com`) + Oculus XR Plugin 4.5.4, via Unity's `XROrigin` — **not** `OVRCameraRig` |
+| Networking | Netcode for GameObjects 2.13.0 over Unity Relay (host/client, DTLS, no dedicated server), tick rate 30 |
+| Voice | Vivox 16.10.0, one group audio channel per room |
+| Platform | Android / Quest, **ARM64 only**, IL2CPP, minSdk + targetSdk 34 |
+| App id | `com.CoolDeal.MRBoardGame2` |
+| Devices | Quest 2 / Pro / 3 / 3S (Quest 1 is explicitly dropped — no useful passthrough) |
+
+Stereo rendering on Android is Multiview. Android ships quality level **1 = Balanced** →
+`Assets/Settings/URP-Balanced.asset`; the Editor sits on level 2 (High Fidelity). HDR is off on
+all three levels on purpose — see [Passthrough](#passthrough).
+
+## Opening the project for the first time
+
+Three things will bite, in this order.
+
+**1. Meta XR Core SDK 205.0.0 does not compile on Unity 6000.5.** The project drops into Safe
+Mode with `CS0619 ... instanceId is obsolete` from `SceneListenerNGO.cs`. This is an upstream bug,
+not a bug here. Fix:
+
+```powershell
+powershell -File Tools/MetaSdkPatch/Apply-MetaSdkPatch.ps1
+```
+
+The patch lands in the gitignored `Library/PackageCache`, so **re-run it after any fresh clone,
+cleared `Library/`, or package re-resolve.** It is idempotent. See
+[`Tools/MetaSdkPatch/README.md`](Tools/MetaSdkPatch/README.md), including when the folder can be
+deleted. **If Unity offers Safe Mode, take it** — "Ignore" opens with unloadable scripts, and
+re-saving a scene in that state strips components off `XRRig`.
+
+**2. Active Input Handling must stay "Input Manager (Old)".** The Meta SDK pulls in
+`com.unity.xr.hands` → `com.unity.inputsystem`, and Unity flips `activeInputHandler` to `2`
+("Both") when that appears. The Oculus XR Plugin then refuses to build for Android. This project
+uses `UnityEngine.XR.InputDevices` for controllers and the legacy `Input` class for the keyboard
+fallback — `InputReader.cs` alone has dozens of legacy `Input.*` calls, and the lobby's
+`EventSystem` uses `StandaloneInputModule`. `activeInputHandler` is currently `0` and must stay
+there.
+
+> Unity prompts *"the native platform backends for the new input system are not enabled… enable
+> the backends?"* on **every Editor launch**. Always answer **No**. There is no "don't ask again";
+> the suppression flag is session-scoped by design.
+
+**3. `MR Template > MR > Configure Meta Passthrough Project Config`** runs automatically on first
+domain load (`Assets/Editor/MRPassthroughSetup.cs`, `[InitializeOnLoad]`) and is re-runnable from
+that menu. It writes `OVRProjectConfig`, which is a ScriptableObject the SDK creates on demand
+inside the package folder and therefore cannot be committed. Without it, Meta's *Android Manifest
+Tool* regenerates `Assets/Plugins/Android/AndroidManifest.xml` and silently strips passthrough,
+both anchor permissions, and boundary visibility. The hand-written manifest and this Editor script
+have to agree; changing one means changing the other.
 
 ## Build and test
 
-There is no CLI tooling, package manifest script, or CI in this repo — all builds go through the Unity Editor (File > Build Settings, Android platform).
+- **No CLI tooling, no CI, no package scripts.** All builds go through the Editor
+  (File > Build Settings, Android).
+- **No automated tests.** `com.unity.test-framework` is in the manifest, but there are no test
+  assemblies, no `Tests/` folders, and **no `.asmdef` anywhere** — every runtime script compiles
+  into the default `Assembly-CSharp`. Adding tests means creating assembly definitions first.
+- **Build scene order** (`ProjectSettings/EditorBuildSettings.asset`) is
+  `OpeningScene` (0) → `StairsGame` (1) → `ChasmGame` (2) → `GameScene` (3). Every scene a room
+  can switch into must be in this list; `LoadScene` fails with `InvalidSceneName` otherwise, and
+  that failure is only visible as a `Debug.LogError` from `GameSelector`.
+- **Testing without a headset works.** `InputReader` falls back to the keyboard per-hand whenever
+  that hand's XR controller is absent, so the whole app is playable in the Editor:
 
-- **No automated tests exist.** `com.unity.test-framework` is in `Packages/manifest.json`, but there are no test assemblies, no `Tests/` folders, and no `.asmdef` files anywhere in `Assets/`. All runtime code compiles into the default `Assembly-CSharp`. Adding a test suite means creating the assembly definitions first.
-- **Build scenes** (`ProjectSettings/EditorBuildSettings.asset`) must stay in this order: `Assets/Scenes/OpeningScene.unity` (index 0, the lobby) then `Assets/Scenes/SecondScene.unity`. `GameController` hard-codes `SceneManager.LoadScene("SecondScene")`.
-- **Testing without a headset**: `InputReader` falls back to keyboard input whenever no XR controller is detected, so the whole app is playable in the Editor. The mapping is documented at the top of `Assets/Scripts/InputReader.cs` — trigger is `.` (right) / `,` (left), grips are `P` / `Q`, face buttons are `A`/`B`/`X`/`Y`, joysticks are arrow keys (right) and `UHJK` (left), and `M`/`N` tilt the camera. Multiplayer paths still need two running clients.
-- `git` is not on `PATH` in the default PowerShell session on this machine; invoke it by full path or use a shell where it resolves.
+  | | Right hand (no right controller) | Left hand (no left controller) |
+  | --- | --- | --- |
+  | Trigger | `.` | `,` |
+  | Grip | `P` | `Q` |
+  | Face buttons | `A`, `B` | `X`, `Y` |
+  | Joystick | arrow keys | `U`/`J` forward-back, `H`/`K` left-right |
+  | Joystick click | `I` | `E` |
 
-## Architecture
+  `M` / `N` tilt the rig (`CameraController2`, debug only). The comment block at the top of
+  `InputReader.cs` lists `O` and `W`; those are stale.
+- `BoardAnchor` disables its own per-frame half when there is no Meta runtime
+  (`BoardAnchor.cs:133-141`), so the Editor path is not an error state. Everything except the
+  anchor itself — world grab, shared board placement, the ring, avatars — still runs.
+- Anything multiplayer needs two running clients. Anything colocation needs two real headsets in
+  one room.
 
-### Session flow
+## Repo state — read this before trusting `git`
 
-`OpeningScene` is a lobby with a VR keyboard. `GameController.Update()` reads which key the pointer is touching and commits it on trigger press: first a room code, then a username. On the final Enter:
+**History before `dcad7e9` is a different application.** Everything up to and including that
+commit is *Math Classroom*, a VR drawing-and-graphing app — its own `CLAUDE.md`, its line
+drawing, function graphing and seating systems. This board game was built on top of it in the
+working tree and landed in **one commit** on the `mr-passthrough` branch: 91 deletions, 78
+additions, 25 renames, 34 modifications.
 
-- **empty room code** → `RelayVivox.CreateRelay()` allocates a Relay slot for 12, gets a join code, `StartHost()`. This client becomes the **room owner** (teacher).
-- **non-empty code** → `RelayVivox.JoinRelay()` → `StartClient()`. A bad code throws `RelayServiceException`, caught in `GameController.TryToJoinRelayVivox()` to re-prompt.
+Practical consequences:
 
-Vivox then joins a group audio channel named after the room code. The NetworkManager/RelayVivox object survives the scene load via `PersistentObject` (`DontDestroyOnLoad`). Everything else happens in `SecondScene`.
+- `git blame` on nearly every file points at that single commit, not at incremental history.
+  There is no per-feature history for colocation, the world grab, the player ring or the menu
+  rework — the design docs below are the closest thing to a rationale trail.
+- Git's rename detection paired files off by content similarity across the two applications, so
+  the log shows nonsense like `Network Graph.prefab → Bridge Spots.prefab`. Those are unrelated
+  files that happened to look alike; don't read meaning into them.
+- `git show dcad7e9:<path>` is how to see the previous application's version of anything.
 
-Room-owner status gates most UI: `MenuControl` opens `Menu1` for the owner and `Menu2` for students, and only the owner can assign seats or delete everyone's drawings.
+## Scenes
 
-### Dual-copy drawing replication
+| Scene | Role |
+| --- | --- |
+| `OpeningScene` | Lobby. VR keyboard, room code + username entry, hosts or joins. Holds the **Network Manager**. |
+| `StairsGame` | Default game. `World Root > Board > Cube` — a placeholder. |
+| `ChasmGame` | The Plateau board: 41 `Plateau` instances and 75 `Bridge Spots` instances under `World Root > Board`. Geometry only, no rules. |
+| `GameScene` | **Legacy.** In the build list, but absent from `GameRoutes`, so nothing can reach it. Predates the `RoomContent`/`WorldGrab` split. |
 
-This is the least obvious part of the codebase and the easiest to break. Every drawing exists **twice**: a local copy the author draws against with zero latency, and a networked twin that everyone else sees.
+A game scene's hierarchy, and the shape any new game should copy:
 
-1. On join, `NetworkLineDrawer.OnNetworkSpawn()` calls `SpawnDrawingsObjectServerRpc` — the server spawns a per-client "Network Drawings" container owned by that client. All of that client's networked drawings are parented to it.
-2. Finishing a stroke calls `CreateNetworkLine` → ServerRpc → server instantiates the prefab, `SpawnWithOwnership(sender)`, parents it, then ClientRpcs the point array and material index out.
-3. **Local↔network pairing** is positional, not by ID: `LineDrawer` enqueues each new local line into `Queue<GameObject> UnpairedLines`, and the networked twin's `NetLineControl.Start()` dequeues on the owner and stamps `pairedNetLineId`. **This depends on network spawn order matching local enqueue order.** Every later move/delete resolves through `pairedNetLineId`, so anything that enqueues out of order silently mispairs drawings.
-4. **Late joiners** are caught up by `LateSyncLinePointsServerRpc`, which walks every `"Drawings"`-tagged object and replays it to that one client via a targeted `ClientRpcParams`. Graphs replay as *function string + bounds*, not vertices — cheaper, and it re-derives the mesh client-side.
+```
+World Root            [RoomContent]        <- everything the game owns hangs here
+  Board
+    ...
+Input Reader          [InputReader]
+Menu Manager          [MenuControl]
+XRRig                 [XROrigin, CameraController2, OVRManager,
+                       OVRPassthroughLayer, PassthroughController,
+                       WorldGrab, ColocationProbe(disabled)]
+  Camera Offset
+    Main Camera
+    Left Hand         [TrackedPoseDriver, LHController]
+    Right Hand        [TrackedPoseDriver, RHController]
+      InfoBlock       [VisibleWhenLooking]   <- shows the room code when looked at
+  Debugger            [DebugLog]
+Directional Light
+```
 
-### Line geometry
+`XROrigin.m_TrackingOriginMode` is **2 (Floor)** in every scene. The rig's `y` is the real floor,
+which the rest of the code assumes everywhere — `PlayerControls` projects the head straight down
+onto it, `PlayerRing` puts every slot at `y = 0`, and `CameraController2` compares the anchor's
+height against it.
 
-`PipeRenderer` replaces Unity's `LineRenderer` with a procedural tube mesh — a 12-sided cylinder swept along the point list with rounded caps, rotated segment-to-segment via `Quaternion.FromToRotation`. This exists so lines carry real `MeshCollider`s and can be physically grabbed. Colliders are only synced on demand via `SyncCollisionMesh()` (drawing sets `autoCreateCollider = false` and syncs once on release) — regenerating them every frame is a performance cliff.
+## Session flow
 
-`LineDrawer.Update()` is a state machine on the `currentAction` string: `listening`, `drawingRH`/`drawingLH`, `deletingLines`, `changingLineWidth`, `grabbingRH`/`grabbingLH`, `resizingDrawings`. `MenuControl.Update()` early-returns unless `currentAction == "listening"`, so menus and drawing are mutually exclusive. Two-handed resize reparents the whole `Drawings` tree under `Middle` (the midpoint of both hands, maintained by `MiddleControl`) and scales by the ratio of hand distance.
+1. `OpeningScene` loads. `RelayVivox.Start()` initializes Unity Services and signs in
+   anonymously. `MicPermissions` requests `RECORD_AUDIO`.
+2. `GameController.Update()` reads whichever key the laser pointer is touching
+   (`pointerControl.currentLetter`) and commits it on right-trigger down — first a **room code**,
+   then a **username**.
+3. On the final Enter:
+   - **empty room code** → `RelayVivox.CreateRelay()` allocates a Relay slot for **12**, gets a
+     join code, `StartHost()`. This client is the **room owner**. `GameController` then calls
+     `GameSelector.LoadGameScene(GameRoutes.DefaultScene)` → `StairsGame`.
+   - **non-empty code** → `RelayVivox.JoinRelay()` → `StartClient()`. **No `LoadScene` here on
+     purpose** — Netcode synchronizes the joiner into whatever scene the room already has open. A
+     bad code throws `RelayServiceException`, caught in `GameController.TryToJoinRelayVivox()`,
+     which re-prompts.
+4. Vivox joins a group audio channel named after the room code.
+5. `NetworkManager.OnServerStarted` fires `BoardAnchor.HandleServerStarted`, which instantiates
+   `Room Anchor.prefab` and calls `Spawn(destroyWithScene: false)`.
 
-### Graphing
+The **Network Manager** GameObject carries `NetworkManager`, `UnityTransport`, `RelayVivox` and
+`BoardAnchor`. Netcode marks it `DontDestroyOnLoad`, which is why `BoardAnchor` lives there: it
+must outlive the scene switches below.
 
-- `FunctionEvaluator` — hand-written recursive expression parser, no library. Handles `+ - * / ^`, nested parens, `sin`/`cos`/`tan`, `p` for pi, `e`, and the variables `x` and `y`. `EvaluateInOrder` applies precedence by repeatedly collapsing the highest-priority operator out of parallel number/operator lists. Its `InvalidOperationException` messages are user-facing — they surface directly into the VR menu's error text, so keep them plain-language.
-- `FunctionRenderer` — samples a 101x101 grid and builds the `z = f(x,y)` surface mesh. **Axis convention flips here**: this class treats z as vertical, but Unity's y is up, so vertices are written `new Vector3(xi, zi, yi)`. It also feeds `_TopHeight`/`_BottomHeight` to the material for height-gradient shading. NaN and values past a ±10000 cutoff clamp to 0.
-- `GraphAxisControl` — axes as `PipeRenderer`s plus an 11x11 grid and TMP labels, handling the case where the origin falls outside the plotted range (axes snap to the nearest edge). `SetAxesAutoScale` fits into a fixed box (1.2 units, or 12 in "big" mode); `SetAxes` uses literal step sizes.
+### Switching games
 
-### Seating
+`MenuControl` → `GameSelector.RequestGame(key)` → `RequestGameServerRpc` → the server validates
+the key against `GameRoutes` (**never** hand a client string to `LoadScene`) → 
+`NetworkManager.SceneManager.LoadScene(name, LoadSceneMode.Single)`. `EnableSceneManagement` is
+on, so every client follows and spawned `NetworkObject`s are carried across. **Clients must never
+call `UnityEngine.SceneManagement.SceneManager.LoadScene` while a session is running.**
 
-`seatControl.makeSeats()` generates three rows of a semicircular arc at radius 2. The room owner always gets `(0, 0, -1)`; everyone else is assigned by their index in `NetworkManager.ConnectedClients` (`PlayerControls.FindMySeatServerRpc`). Note the arc yields ~30 seats but Relay is allocated for 12. When the teacher toggles assigned seats on, `CameraController2.Update()` locks each player to their seat and free movement is disabled.
+`LoadSceneMode.Single` destroys the rig, the camera, the hands, the Input Reader and the Menu
+Manager on every switch. Three components rebind around this and every new component that caches a
+scene object must do the same:
 
-`PlayerControls` syncs head and both hands as owner-writable `NetworkVariable<Vector3>` position/forward pairs; the display name is server-writable and set through a ServerRpc. Your own avatar's children are disabled locally so you don't see your own floating head.
+- `PlayerControls.BindToScene()` on `SceneManager.activeSceneChanged`
+- `BoardAnchor.HandleActiveSceneChanged()` clears its cached rig and Input Reader
+- `CameraController2.AdoptLocalPlayerSlot()` in `Start()`, for the case where the rig comes up
+  after the player object
+
+Surviving objects: the Network Manager (and `BoardAnchor` with it), the `Player` prefabs, the
+`Room Anchor` object, and the `GameObject` holding the bound `OVRSpatialAnchor`
+(`DontDestroyOnLoad`, so it is not re-downloaded and re-localized on every switch).
+
+## Colocation — one anchor, every headset in the same real room
+
+This is the core of the project and the part most likely to be broken by an innocent change.
+
+**The idea.** The room owner presses *Place Anchor*. `BoardAnchor` creates an `OVRSpatialAnchor`
+at their feet, localizes it, saves it, shares it into a fresh group GUID, and publishes
+`(group, uuid)` onto `RoomAnchor`'s `NetworkVariable`s. Every other client polls those, downloads
+that exact UUID, localizes it, and binds. From then on each client moves **its own rig** every
+frame so the anchor lands on the world origin. World space is now the same physical frame on every
+headset, so every networked value in the project stays in plain world coordinates and needs no
+conversion.
+
+The anchor does **not** have to be where the board is. The board is placed separately with the
+world grab, and that placement is networked. Feet, not table — nothing to aim at, nothing to
+measure.
+
+**Alignment is continuous, not one-shot** (`CameraController2.AlignRigToAnchor`). The runtime
+recenters the tracking origin on its own and re-localizes anchors as the room map improves; each
+of those slides a one-shot alignment permanently out of the shared frame. The transform is
+idempotent by construction, so a frame in which nothing moved writes back the pose already there.
+It is **yaw-only** — pitch and roll from an anchor are noise, and applying them would tip the board
+off the real floor — but it *does* take the anchor's height, because each headset puts `y = 0` on
+its own floor estimate and those differ by centimetres. A height disagreement past
+`MaxAnchorHeightDisagreement` (0.25 m) **rejects the whole frame** rather than half-applying it.
+
+**What alignment switches off.** Once `CameraController2.LocalIsAligned` is true, joystick
+locomotion, snap-turn, recentring and the debug tilt all early-out (`CameraController2.cs:91-94`),
+and `ApplyRingAnchor` refuses to move the rig. A colocated player's position is a fact about the
+real room, not something to assign; involuntary rig moves in passthrough are nauseating. The flag
+is `static` because everything that cares — `PlayerControls`, `WorldGrab`, the probe — needs it
+without holding a reference to a rig that is destroyed on every game switch.
+
+**Failure is survivable and honest.** A client that never binds still plays; it is simply a player
+in a different room. It keeps locomotion and the recentre button, and it still gets a ring slot.
+`A` (`BoardAnchor.RequestReAlign`) re-downloads and re-localizes; it releases the current binding
+first, because the SDK filters already-bound anchors out of query results and the retry would
+otherwise report a download failure that never happened.
+
+**Load requests are latched, never dropped** (`RequestLoad` / `PumpLoadsAsync`). A load can be in
+flight for a minute with retries and an 8-second localize timeout; a dropped request would leave
+one client bound to a stale anchor permanently with nothing to tell it otherwise.
+
+**A freshly published anchor is ignored coming back.** After publishing, `PollRoomAnchor` refuses
+to follow `RoomAnchor` until the server echoes the client's own UUID (15 s timeout). Until then
+what is on `RoomAnchor` is still the *previous* anchor, and following it would tear down the one
+just placed.
+
+### Execution-order contract
+
+Four components carry `[DefaultExecutionOrder]` and the values are load-bearing:
+
+| Order | Component | Why |
+| --- | --- | --- |
+| (default 0) | `CameraController2` | locomotion, recentre |
+| **10** | `BoardAnchor` | must run **after** `OVRSpatialAnchor.Update()` refreshes the anchor's world pose; reading it earlier gets last frame's rig baked in |
+| **15** | `RoomContent` | applies the shared board pose to `World Root` in this frame's aligned frame |
+| **20** | `PlayerControls`, `WorldGrab` | sample head/hand world poses **after** the rig has moved; at order 0 every pose broadcast is a frame stale (~13 ms at 72 Hz) on top of network latency |
+
+## The content frame and the two-grip world grab
+
+`World Root` is the content frame. **Everything the game owns hangs under it and nothing a player
+owns does** — which is what makes "move and resize everything except the players" structural
+rather than a filter. `RoomContent` (on `World Root`) applies `RoomAnchor.contentPos/Yaw/Scale`
+each frame with an 80 ms first-order filter, and snaps rather than glides on the first frame so a
+joiner or a freshly loaded scene is already correct.
+
+The gesture (`WorldGrab`, on `XRRig`) is: **both grips** → move, turn and resize the board.
+
+- Yaw is **accumulated from per-frame deltas**, not from a single `theta - theta0`. `atan2` wraps
+  at ±180°, which would spin the board a full turn at the seam and cap the gesture at half a
+  revolution. Frames where the hands are stacked vertically contribute nothing (the axis has no
+  yaw there) — a pause in the turn rather than a spin.
+- Scale is the **clamped** span ratio. Using the raw ratio makes the board slide out from under
+  your hands once it hits a limit while appearing stationary in size. Bounds are
+  `RoomAnchor.MinScale`/`MaxScale` (0.15 – 4), enforced server-side too.
+- The pose applied is a proper similarity transform mapping `startCenter → center`. Naive
+  `startPos + (center - startCenter)` drags the board sideways whenever its origin is not exactly
+  under your hands, which it never is.
+- Scaling `World Root` and never the rig is deliberate: scaling the rig drags the user's tracked
+  hands away from the real hands they can see through passthrough.
+
+**The lock.** `RoomAnchor.worldHolder` is a server-written client id, `NoHolder = ulong.MaxValue`
+(not `0` — that is the host). First to squeeze both grips wins until they let go. Without it, two
+players gesturing at once each stream a pose from their own hands and the board oscillates at the
+tick rate. Details that matter:
+
+- The holder drives `RoomContent.ApplyImmediate` at frame rate locally and sends at `SendHz` (20);
+  everybody else smooths what arrives.
+- On release, `Commit()` sends one unconditional final pose before the lock is dropped — RPCs from
+  one sender are reliable-sequenced, so the server applies it before clearing the lock.
+- `Cancel()` releases on `claimSent`, **not** on `LocalHoldsWorld`, so letting go mid-round-trip
+  cannot leave the server granting a lock nobody is using.
+- `OnDisable` cancels, because a game switch destroys the rig mid-gesture.
+- The server clears the lock on `OnClientDisconnectCallback`.
+
+## Where players stand — `PlayerRing`
+
+A static ring of **12** slots (matching the Relay allocation of 12) at radius 2 m, centred on the
+world origin, all at `y = 0`. Slot 0 is on the −Z side.
+
+The server assigns a slot once in `PlayerControls.OnNetworkSpawn` via
+`PlayerRing.PickFreeSlot(OccupiedSlots())` — the middle of the widest empty stretch, so one player
+is at 0, the second opposite, the third and fourth on the quarters. **It never re-spaces players
+who are already there**; teleporting somebody because a third player joined is exactly the
+involuntary rig move that makes people sick. Occupancy is read from live players rather than a
+static, so a slot cannot leak on an ungraceful disconnect.
+
+Nothing about the ring is networked and it never moves the shared world — a slot is only ever the
+anchor for *this client's* rig (`CameraController2.PlaceAtRingSlot`), and it is skipped entirely
+in the lobby (`GameRoutes.IsGameScene`) and for colocated players.
+
+**Adding a game should mean putting its board at the origin and nothing else.** If a board needs
+more room, change `PlayerRing.Radius` rather than moving boards per scene.
+
+## Avatar replication
+
+`Player.prefab` (the `NetworkManager`'s player prefab, auto-spawned per client) carries
+`PlayerControls`, `GameSelector` and `ClientNetworkTransform` (a `NetworkTransform` with
+`OnIsServerAuthoritative() => false`). Children, resolved **by name** in `OnNetworkSpawn`:
+`Username`, `PlayerLeft`, `PlayerRight`, `mainFace`, `tornado`.
+
+- **A remote player is two cones and a name.** `ShowRemoteHeadAndBody` is `false`: in passthrough
+  their real head and body are already there, and a virtual copy is at best noise and at worst
+  drawn where they are not. The head is `SetActive(false)`, not deleted, because `Update()`
+  dereferences it unguarded every frame.
+- Your own avatar's children are all disabled locally — you are inside it.
+- Hands go on the wire as **position + `Quaternion`**, not position + forward. Rebuilding a
+  rotation with `LookRotation` discards roll and is ill-conditioned near vertical — and pointing a
+  controller straight down at a board is the default posture here, not an edge case.
+- The nametag is derived from the **head pose**, not from a fixed height above the avatar root.
+  The old fixed 1.43 m rendered across the face of anyone 1.45 m at eye height or taller.
+  `FaceBelowEyes` (0.36) is the mesh-pivot-to-eye offset and is used in both directions, so it
+  exists once rather than as the same magic number in two places.
+- Remote poses are smoothed with a frame-rate-independent exponential lerp (`RemoteSmoothTime`
+  0.06 s). `NetworkVariable` delivers at the 30 Hz tick and the headset renders at 72–90, so raw
+  assignment makes the cones step. A player who has just spawned **snaps** rather than gliding in
+  from the origin. The face *value* is smoothed once and drives both the head and the tag, so the
+  two cannot diverge.
+- `playerName` is a `FixedString32Bytes` (29 bytes of UTF-8) and is clamped before the ServerRpc —
+  the lobby keyboard has no length limit, and an over-long name would throw *on the server* and
+  take the name down for everybody.
+
+## Menus, pointer, keys
+
+`MenuControl` (on `Menu Manager`, one per game scene). **`X` opens and closes** the menu, which is
+instantiated 1.3 m in front of the camera and 0.7 m to the left. The laser pointer plus the right
+trigger picks a key: pressed on trigger **down**, acted on trigger **up**, so sliding off a key
+cancels it.
+
+Keys are dispatched by **`keyInfo.keyName` string**, never by child index. (The menu this replaced
+resolved widgets with `GetChild(0).GetChild(9).GetChild(13)`, so re-skinning the prefab broke it
+with no compile error.) `pointerControl` reports `keyName`, not the visible label.
+
+`Menu1.prefab` currently holds three keys: **`Stairs`**, **`Chasms`**, **`Place Anchor`**.
+`MenuControl.HandleKey` also handles **`Passthrough`**, but no such key exists in the prefab today
+(the Editor command that added it, `AddPassthroughMenuKey.cs`, was deleted) — the handler is live
+and unreachable. An unknown key is deliberately inert and logs.
+
+`pointerControl` fires on trigger colliders tagged **`key`** and stretches the visible beam to the
+hit. `GrabControl` (on `Left Grabber` / `Right Grabber`) tracks colliders tagged **`Grabbable`**;
+nothing is tagged that today, so `WorldGrab.CanStart`'s "two grips with a piece in hand is a piece
+grab, not a world grab" check is currently always false — it is there so it does not have to be
+retrofitted the day the first piece becomes grabbable.
+
+## Passthrough
+
+`PassthroughController` on `XRRig`. Passthrough on Quest is a **compositor layer owned by the Meta
+runtime**, not a render feature: the app must submit a frame whose background pixels have
+**alpha = 0**, and the runtime composites the camera feed underneath. Deleting the skybox alone
+gives you a black background with no error message. Four things had to be true and all four are
+currently applied — **do not regress any of them**:
+
+1. `Main Camera`: `m_ClearFlags: 2` (Solid Color), background `(0,0,0,0)`,
+   **`m_RenderPostProcessing: 0`**. URP's post stack writes opaque alpha into the final target and
+   is the single most common cause of "I followed the tutorial and it is still black".
+2. `m_SupportsHDR: 0` on **all three** URP quality assets. HDR on mobile selects
+   `R11G11B10_UFloat`, which has **no alpha channel**.
+3. `OVRPassthroughLayer.overlayType = Underlay` (Overlay draws the feed on top of everything).
+4. `m_SkyboxMaterial: {fileID: 0}` in every scene. `m_AmbientMode` is `3` (flat colour) in all of
+   them, so removing the skybox does **not** change the lighting — if something looks different
+   after a change here, the cause is elsewhere.
+
+`Assets/Materials/Space.mat` is kept, not deleted, so VR mode is still reachable
+(`vrSkybox` on the controller). The on/off state is `static`, so a choice made in the lobby
+survives the load into the game. It is deliberately **not** a `NetworkVariable` — passthrough is a
+per-user comfort setting like brightness, and one player switching to VR must not drag the room
+with them.
+
+The controller also owns **Guardian suppression**, because Meta requires the two to move together:
+in full-VR mode the player cannot see the real room, so the boundary is the only thing keeping
+them off the furniture and it must come back. Suppression needs all three of
+`OVRManager.shouldBoundaryVisibilityBeSuppressed`, `boundaryVisibilitySupport` in `OVRProjectConfig`
+(written by `MRPassthroughSetup`), and `com.oculus.permission.BOUNDARY_VISIBILITY` in the manifest.
+Missing any one and the runtime refuses silently.
+
+`EnsureOvrComponents()` will add a missing `OVRManager` or `OVRPassthroughLayer` at runtime, but
+wiring them in the scene is preferred — Meta's Project Setup Tool only validates components it can
+find in the scene.
+
+## Input
+
+`InputReader` (on `Input Reader`, one per scene) polls `UnityEngine.XR.InputDevices` every frame
+and republishes everything as plain public fields: level (`ButtonA`), edge-down (`ButtonADown`),
+edge-up (`ButtonAUp`), and analogue values. Two things to know:
+
+- Device queries filter on `Controller | Left`/`Right`. Asking for bare `Right` also matches a
+  tracked right *hand*, so enabling hand tracking alongside controllers used to push the match
+  count to 2 and silently kill all right-hand input.
+- Each hand independently falls back to the keyboard when its controller is absent.
+- `*Down` flags are one-shot edges. Held gestures must read levels — `WorldGrab` reads
+  `LeftGrip && RightGrip`, not the `Down` flags.
+
+Control map as it stands:
+
+| Input | Effect |
+| --- | --- |
+| Right trigger | select a menu / keyboard key |
+| `X` | open / close the menu |
+| `A` | re-align to the room anchor (`BoardAnchor.RequestReAlign`) |
+| Both grips | world grab — move, turn, resize the board |
+| Left joystick | move and snap-turn — **only when not colocated and not world-grabbing** |
+| Left joystick click | recentre the rig on the ring slot |
+| Right joystick click | clear the in-headset debug log |
+| `M` / `N` | tilt the rig (Editor debugging) |
+
+`B`, `Y`, and the individual grips are read nowhere, which is why `A` was free for re-align.
+
+## Debugging in the headset
+
+`DebugLog` (on `Debugger`, a child of `XRRig`) mirrors `Application.logMessageReceived` into a
+10-line TextMeshPro box and appends the Relay room code. `Debug.Log` from anywhere lands there —
+no adb, no extra UI. Right joystick click clears it. (It used to be the *left* click, which meant
+every recentre wiped the log you were reading to find out why you recentred.)
+
+`ColocationProbe` (on `XRRig`, **disabled in both game scenes**) prints one line a second:
+rig/head height, `aligned`, `anchored`, `tracked`, the short UUID, the count of system-initiated
+recenters, the content scale, the lock holder, and every remote player's head/hand height. Its
+class comment is a read-it-like-this guide; the short version:
+
+- recenters ticks **and the cones move** → no shared frame
+- recenters ticks **and nothing moves** → alignment works; this is the acceptance test
+- differing `uuid` on two headsets → they are on different anchors
+- `head.y ≈ 1.36` or `≈ 2.7` on a standing adult → `Camera Offset` was never zeroed; nothing else
+  means anything until this clears
+
+Enable it before changing anything in this area, and take a baseline first.
+
+`VisibleWhenLooking` on `InfoBlock` shows the room code when the player looks at it.
+
+## Adding a game
+
+Four edits, by design:
+
+1. A scene with `World Root` (+ `RoomContent`), `Input Reader`, `Menu Manager`, `XRRig`, board
+   geometry **at the origin**.
+2. A key in `Menu1.prefab` whose `keyInfo.keyName` matches exactly.
+3. A `case` in `MenuControl.HandleKey` calling `RequestGame(keyName)`.
+4. A row in `GameRoutes.SceneByKey`, and the scene in the build list.
 
 ## Conventions that break silently
 
-- **`GameObject.Find` by exact name**, resolved at runtime across many scripts. Renaming any of these in `SecondScene` compiles fine and fails at runtime: `XRRig`, `Network Manager`, `Input Reader`, `Left Hand`, `Right Hand`, `Left Grabber`, `Right Grabber`, `Seating Manager`, `Menu Manager`, `Scene Two Manager`, `Drawings`.
-- **Tags** drive replication and grabbing: `Drawings`, `Graph`, `Axes`, `Line`, `key`. `GrabControl` also walks parents by *name* until it hits `Drawings`/`Right Grabber`/`Left Grabber`.
-- **Menu wiring uses hardcoded child indices** — e.g. `currentMenu.transform.GetChild(0).GetChild(9).GetChild(13)` in `MenuControl`. Reordering children in the menu prefabs breaks the menu with no compile error.
-- **`MenuControl` keeps graph state in `static` fields** (function string, bounds, step sizes, scale flags) so it persists across menu opens — and across scene reloads within a session.
-- Material/color selection is an index into `Material[]` arrays on `LineControl`/`NetLineControl`/dot controllers; the default is `4` in several places.
+**`GameObject.Find` by exact name**, resolved at runtime, in many scripts. Renaming any of these
+compiles fine and fails at runtime:
 
-## Repo layout note
+`XRRig` · `Network Manager` · `Input Reader` · `Menu Manager` · `Left Hand` · `Right Hand` ·
+`Left Grabber` · `Right Grabber`
 
-Nine `.apk` files, eight `*_BurstDebugInformation_DoNotShip/` folders, `Math_Classroom_Web_Build/`, and `v2_windows_build/` sit at the repo root. These are stale build artifacts, not source — `.gitignore` covers `/Build/` and `/Builds/` but not these names. All real code is the 33 files in `Assets/Scripts/`. `Assets/TutorialInfo/` is leftover Unity URP template sample content.
+`RHController`/`LHController` do `GameObject.Find("Input Reader").GetComponent<InputReader>()` with
+no null check and will throw outright. `CameraController2` and `WorldGrab` search *descendants of
+the rig* by name at any depth rather than by path, because `"Camera Offset/Left Hand"` is exactly
+the kind of hardcoded path this project keeps getting bitten by.
 
-`CameraController.cs` is the superseded pre-seating version of `CameraController2.cs`; only the latter is wired up. `AxisControl.cs` (LineRenderer-based) is likewise superseded by `GraphAxisControl.cs` (PipeRenderer-based).
+**Prefab child names** are equally load-bearing: `Username`, `PlayerLeft`, `PlayerRight`,
+`mainFace`, `tornado` on `Player.prefab`. These used to be `GetChild(1)..GetChild(4)`, so
+reordering the Hierarchy produced a scrambled avatar with no error. Now a rename logs one.
+
+**Tags**: `key` (pointer targets) and `Grabbable` (grabber volumes). `GrabControl` also walks
+parents **by name** until it hits `Right Grabber`/`Left Grabber`.
+
+**Serialized-field renames drop every scene's value silently.** `CameraController2.LeftHand` used
+to be `RightHand`; `StairsGame.unity` still carries the dead key. This is why several components
+re-resolve a null serialized reference in `Start()` — treat that as the pattern, not as belt and
+braces.
+
+**`NetworkVariable` write permission is the security boundary.** `spawnSlot`, `playerName`,
+`roomOwner`, and everything on `RoomAnchor` are **server-written**; hand/head poses are
+owner-written. Every `ServerRpc` that mutates shared state validates the sender
+(`SetContentServerRpc` checks the lock, `RequestGameServerRpc` checks `GameRoutes`).
+
+**Static state that outlives a scene, and a Play session with domain reload off**:
+`CameraController2.LocalIsAligned`, `WorldGrab.IsActive` / `LocalHoldsWorld`,
+`PassthroughController.passthroughOn`, `GameSelector.s_SwitchInProgress`,
+`GameController.joinCode` / `nickName`. `BoardAnchor.Awake` resets the alignment flag explicitly
+for this reason.
+
+**`Instance` singletons** (`BoardAnchor`, `RoomAnchor`, `RoomContent`) are set in
+`Awake`/`OnNetworkSpawn` and cleared in `OnDestroy`/`OnNetworkDespawn` guarded by
+`if (Instance == this)`. Keep that guard — `RoomAnchor` despawns and respawns on a reconnect.
+
+## Dead or unwired code
+
+- `NetworkReconnectHandler.cs` and `PersistentObject.cs` are **attached to nothing**. Several
+  comments (in `BoardAnchor`, `DebugLog`, `VisibleWhenLooking`) are written as though they are
+  live. The Network Manager survives scene loads because Netcode marks it `DontDestroyOnLoad`
+  itself, not because of `PersistentObject`.
+- `Assets/Scenes/GameScene.unity` — legacy, unreachable.
+- `MenuControl.worldRoot` is unassigned in both game scenes, so the board is not hidden behind an
+  open menu.
+- Root clutter, not source: `BoardGames.apk`, `build/`,
+  `MRBoardGame_BurstDebugInformation_DoNotShip/`, three `.sln` files,
+  `Assets/Scenes/SampleScene/` (stale baked lighting).
+
+## Design docs
+
+Long-form working documents. They are *plans with running commentary*, and parts
+are marked applied, corrected, or out of scope — check the code before trusting a detail.
+
+| File | Covers |
+| --- | --- |
+| [`plateauRules.md`](plateauRules.md) | The game's rules. The design target; nothing here is implemented. |
+| [`anchoringUpdate.md`](anchoringUpdate.md) | One anchor per room, the `World Root` content frame, the two-grip world grab. |
+| [`fixAnchoring.md`](fixAnchoring.md) | Colocated alignment, the nametag and hand-cone defects, the two-cones-and-a-name avatar. |
+| [`updates1.md`](updates1.md) | Earlier pass — root causes and ordering. |
+| `MRUpdate.md` — deleted on disk, read it with `git show dcad7e9:MRUpdate.md` | The passthrough conversion. §5 (transparency), §11 (repo landmines) and §14 (Editor-only steps) are still the reference for that work. |

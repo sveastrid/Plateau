@@ -29,7 +29,7 @@ public class RelayVivox : MonoBehaviour
         await AuthenticationService.Instance.SignInAnonymouslyAsync();
     }
 
-    public async void StartRelayAndVivox(string userDisplayName)
+    public async Task StartRelayAndVivox(string userDisplayName)
     {
         myUserDisplayName = userDisplayName;
         await CreateRelay();
@@ -68,6 +68,7 @@ public class RelayVivox : MonoBehaviour
         catch (RelayServiceException e)
         {
             Debug.Log(e);
+            throw;          // GameController has to know the room was never created.
         }
     }
 

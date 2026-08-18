@@ -4,7 +4,6 @@ using System.Collections.Generic;
 using UnityEngine;
 using UnityEngine.XR;
 using TMPro;
-using UnityEngine.SceneManagement;
 using Unity.Netcode;
 using Unity.Services.Relay;
 //using Unity.Services.Authentication;
@@ -14,7 +13,7 @@ using Unity.Collections;
 using System.Threading.Tasks;
 using UnityEngine.UI;
 
-public class GameController : NetworkBehaviour
+public class GameController : MonoBehaviour
 {
     //So you can get user inputs
     public InputReader inputs;
@@ -123,25 +122,54 @@ public class GameController : NetworkBehaviour
 
         if (inputs.RightMainTriggerUp)
         {
-            if (pressedKey != null)
+            if (pressedKey == null)
             {
-                pressedKey.MakeSmaller();
+                return;                       // trigger released without ever touching a key
             }
+
+            pressedKey.MakeSmaller();
+
             if (pressedKey.keyName == "Enter" && joinedRelay)
             {
-                if ((joinCode == "") && (nickName != ""))
+                if (joinCode == "" && nickName != "")
                 {
-                    relayVivoxStarter.StartRelayAndVivox(nickName);
-                    //stores the relayroomcode in the RelayVivox script
-                    SceneManager.LoadScene("SecondScene");
+                    HostNewRoom();
                 }
                 else if (nickName != "")
                 {
                     TryToJoinRelayVivox();
                 }
             }
-
         }
+    }
+
+    /// <summary>
+    /// Host path. StartHost() has to complete before the scene can be loaded, because
+    /// NetworkManager.SceneManager does not exist until the session is running.
+    /// </summary>
+    private async void HostNewRoom()
+    {
+        instructions.SetText("Creating room...");
+
+        try
+        {
+            await relayVivoxStarter.StartRelayAndVivox(nickName);
+        }
+        catch (RelayServiceException)
+        {
+            instructions.SetText("Could not create a room. Press Enter to try again.");
+            return;
+        }
+
+        if (NetworkManager.Singleton == null || !NetworkManager.Singleton.IsServer)
+        {
+            instructions.SetText("Could not create a room. Press Enter to try again.");
+            return;
+        }
+
+        // Server-driven. This is what puts the host — and every client that joins later,
+        // via Netcode's synchronization — into StairsGame.
+        GameSelector.LoadGameScene(GameRoutes.DefaultScene);
     }
 
     private async void TryToJoinRelayVivox()
@@ -165,7 +193,11 @@ public class GameController : NetworkBehaviour
             return;
         }
 
-        SceneManager.LoadScene("SecondScene");
+        // No LoadScene here, on purpose. Netcode synchronizes this client into whatever scene
+        // the host already has open — which may be StairsGame or ChasmGame, depending on what
+        // the room is playing right now. Loading a scene here would fight that.
+        instructions.SetText("Joining room...");
+        instructionsSubfield.gameObject.SetActive(false);
     }
-    
+
 }

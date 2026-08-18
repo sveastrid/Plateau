@@ -66,7 +66,7 @@ RectTransform:
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
   m_AnchorMin: {x: 0.5, y: 0.5}
   m_AnchorMax: {x: 0.5, y: 0.5}
-  m_AnchoredPosition: {x: 0, y: 1.43}
+  m_AnchoredPosition: {x: 0, y: 0}
   m_SizeDelta: {x: 6, y: 0.4}
   m_Pivot: {x: 0.5, y: 0.5}
 --- !u!23 &4488381383698857078
@@ -215,6 +215,7 @@ GameObject:
   - component: {fileID: 4966690844495405877}
   - component: {fileID: 4966690844495405879}
   - component: {fileID: 5921838794062618373}
+  - component: {fileID: 3128456071905283740}
   m_Layer: 0
   m_Name: Player
   m_TagString: Untagged
@@ -257,7 +258,7 @@ MonoBehaviour:
   GlobalObjectIdHash: 951099334
   AlwaysReplicateAsRoot: 0
   SynchronizeTransform: 1
-  ActiveSceneSynchronization: 0
+  ActiveSceneSynchronization: 1
   SceneMigrationSynchronization: 1
   SpawnWithObservers: 1
   DontDestroyWithOwner: 0
@@ -284,7 +285,11 @@ MonoBehaviour:
   playerLeft: {fileID: 0}
   playerRight: {fileID: 0}
   face: {fileID: 0}
-  theSeats: {fileID: 0}
+  body: {fileID: 0}
+  rig: {fileID: 0}
+  NameTagAboveEyes: 0.28
+  ShowRemoteHeadAndBody: 0
+  RemoteSmoothTime: 0.06
   playerName:
     m_InternalValue:
       utf8LengthInBytes: 8
@@ -322,18 +327,16 @@ MonoBehaviour:
         byte0029: 0
   lHPos:
     m_InternalValue: {x: 0, y: 0, z: 0}
-  lHRot:
-    m_InternalValue: {x: 1, y: 0, z: 0}
   rHPos:
     m_InternalValue: {x: 0, y: 0, z: 0}
-  rHRot:
-    m_InternalValue: {x: 1, y: 0, z: 0}
   facePos:
     m_InternalValue: {x: 1, y: 0, z: 0}
+  lHRot:
+    m_InternalValue: {x: 0, y: 0, z: 0, w: 1}
+  rHRot:
+    m_InternalValue: {x: 0, y: 0, z: 0, w: 1}
   faceRot:
-    m_InternalValue: {x: 1, y: 0, z: 0}
-  mySeat:
-    m_InternalValue: {x: 0, y: 0, z: 0}
+    m_InternalValue: {x: 0, y: 0, z: 0, w: 1}
   roomOwner:
     m_InternalValue: 0
 --- !u!114 &5921838794062618373
@@ -366,6 +369,18 @@ MonoBehaviour:
   InLocalSpace: 0
   Interpolate: 1
   SlerpPosition: 0
+--- !u!114 &3128456071905283740
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 4966690844495405874}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: db3fbe367c63418bb31a219a6e31df4e, type: 3}
+  m_Name:
+  m_EditorClassIdentifier:
 --- !u!1 &8289182944077407651
 GameObject:
   m_ObjectHideFlags: 0
@@ -381,7 +396,7 @@ GameObject:
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
   m_StaticEditorFlags: 0
-  m_IsActive: 1
+  m_IsActive: 0
 --- !u!4 &234557270999645260
 Transform:
   m_ObjectHideFlags: 0
@@ -587,6 +602,11 @@ PrefabInstance:
       propertyPath: m_Name
       value: tornado
       objectReference: {fileID: 0}
+    - target: {fileID: 919132149155446097, guid: 294ef473883141449ab4500f153cd3ff,
+        type: 3}
+      propertyPath: m_IsActive
+      value: 0
+      objectReference: {fileID: 0}
     m_RemovedComponents: []
     m_RemovedGameObjects: []
     m_AddedGameObjects: []
@@ -634,7 +654,7 @@ PrefabInstance:
     - target: {fileID: -8679921383154817045, guid: dca3d72ce32048e409eaaf754210cfe8,
         type: 3}
       propertyPath: m_LocalPosition.z
-      value: -1.22
+      value: -0.643
       objectReference: {fileID: 0}
     - target: {fileID: -8679921383154817045, guid: dca3d72ce32048e409eaaf754210cfe8,
         type: 3}
@@ -753,7 +773,7 @@ PrefabInstance:
     - target: {fileID: -8679921383154817045, guid: dca3d72ce32048e409eaaf754210cfe8,
         type: 3}
       propertyPath: m_LocalPosition.z
-      value: -1.23
+      value: -0.643
       objectReference: {fileID: 0}
     - target: {fileID: -8679921383154817045, guid: dca3d72ce32048e409eaaf754210cfe8,
         type: 3}

@@ -4,9 +4,13 @@ using UnityEngine;
 /// Enables Meta Insight Passthrough and switches the camera to composite over it.
 /// Attach to "XRRig". Keeps a reference to the old skybox so VR mode is still reachable.
 ///
-/// The on/off state is static on purpose, matching how MenuControl keeps its graph state:
-/// it survives the OpeningScene -> SecondScene load, so a user who turns passthrough off in
-/// the lobby stays in VR when the classroom loads.
+/// The on/off state is static on purpose: it survives the OpeningScene -> GameScene load,
+/// so a user who turns passthrough off in the lobby stays in VR when the room loads.
+///
+/// Also owns Guardian suppression, because Meta requires the two to move together — see
+/// SetPassthrough. Suppression additionally needs boundaryVisibilitySupport in OVRProjectConfig
+/// (Assets/Editor/MRPassthroughSetup.cs) and com.oculus.permission.BOUNDARY_VISIBILITY in the
+/// manifest; without both, the runtime silently refuses and the boundary stays visible.
 /// </summary>
 public class PassthroughController : MonoBehaviour
 {
@@ -14,6 +18,7 @@ public class PassthroughController : MonoBehaviour
     public Camera targetCamera;                   // "Main Camera"
     public Material vrSkybox;                     // Assets/Materials/Space.mat
     public bool startInPassthrough = true;
+    public bool suppressBoundary = true;          // hide the Guardian while passthrough is on
 
     static bool passthroughOn;
     static bool stateRemembered;
@@ -66,7 +71,16 @@ public class PassthroughController : MonoBehaviour
         stateRemembered = true;
 
         if (OVRManager.instance != null)
+        {
             OVRManager.instance.isInsightPassthroughEnabled = on;
+
+            // Suppression has to track the passthrough layer, not just be switched on once: in
+            // full-VR mode the player cannot see the real room, so the Guardian is the only thing
+            // keeping them off the furniture and it must come back. OVRManager re-requests this
+            // every frame until the runtime agrees (OVRManager.UpdateBoundary), so setting it here
+            // is enough even though passthrough has not finished initialising yet.
+            OVRManager.instance.shouldBoundaryVisibilityBeSuppressed = on && suppressBoundary;
+        }
 
         if (passthroughLayer != null)
             passthroughLayer.enabled = on;

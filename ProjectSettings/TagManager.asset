@@ -5,11 +5,7 @@ TagManager:
   serializedVersion: 3
   tags:
   - key
-  - DebugText
-  - Drawings
-  - Graph
-  - Axes
-  - Line
+  - Grabbable
   layers:
   - Default
   - TransparentFX

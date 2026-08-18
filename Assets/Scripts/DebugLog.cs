@@ -1,7 +1,5 @@
 using System.Collections;
-using System.Collections.Generic;
 using UnityEngine;
-using UnityEngine.XR;
 using TMPro;
 
 public class DebugLog : MonoBehaviour
@@ -11,10 +9,25 @@ public class DebugLog : MonoBehaviour
 
     uint qsize = 10;  // number of messages to keep
     Queue myLogQueue = new Queue();
+    RelayVivox relay;
 
     void Start()
     {
-        inputs = GameObject.Find("Input Reader").GetComponent<InputReader>(); 
+        GameObject inputReader = GameObject.Find("Input Reader");
+        if (inputReader != null)
+        {
+            inputs = inputReader.GetComponent<InputReader>();
+        }
+
+        // "Network Manager" is carried over from the lobby by PersistentObject, so it does
+        // not exist if you press Play directly in this scene. Resolve it once here rather
+        // than on every GUI event, which is what the original did.
+        GameObject networkManager = GameObject.Find("Network Manager");
+        if (networkManager != null)
+        {
+            relay = networkManager.GetComponent<RelayVivox>();
+        }
+
         Debug.Log("Started up logging.");
     }
 
@@ -39,10 +52,20 @@ public class DebugLog : MonoBehaviour
 
     void OnGUI()
     {
-        if (inputs.LeftJoystickButtonDown)
+        if (debugBox == null)
+        {
+            return;
+        }
+
+        // The RIGHT joystick button, not the left. Locomotion moved to the left controller, and
+        // pressing the left stick now recentres the rig — clearing the log off the same press
+        // meant every recentre wiped the log you were reading to find out why you recentred.
+        if (inputs != null && inputs.RightJoystickButtonDown)
         {
             myLogQueue.Clear();
         }
-        debugBox.SetText("\n" + "Left Joystick Button to clear, " + GameObject.Find("Network Manager").GetComponent<RelayVivox>().relayRoomCode + "\n" + string.Join("\n", myLogQueue.ToArray()));
+
+        string roomCode = relay != null ? relay.relayRoomCode : "no room";
+        debugBox.SetText("\n" + "Right Joystick Button to clear, " + roomCode + "\n" + string.Join("\n", myLogQueue.ToArray()));
     }
 }

@@ -1,0 +1,22 @@
+
+newmtl Standard_322F2D
+Kd  0.1960784 0.1843137 0.1764706
+Ks  0 0 0
+Ka  0 0 0
+d  1
+Ns  0
+illum 1
+
+
+
+
+newmtl Standard_FF301B
+Kd  1 0.1882353 0.1058824
+Ks  0 0 0
+Ka  0 0 0
+d  1
+Ns  0
+illum 1
+
+
+

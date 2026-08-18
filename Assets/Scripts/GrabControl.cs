@@ -1,44 +1,38 @@
-using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
 
+/// <summary>
+/// Tracks whatever grabbable objects a hand's grabber volume is currently overlapping.
+/// Tag a game object "Grabbable" to make it pickable.
+/// </summary>
 public class GrabControl : MonoBehaviour
 {
+    public const string GrabbableTag = "Grabbable";
+
     public bool lineHit;
     public List<GameObject> lines = new List<GameObject>();
 
     public void OnTriggerEnter(Collider other)
     {
-        if (other.gameObject.tag == "Line")
+        if (other.gameObject.tag == GrabbableTag)
         {
-            Transform currentObject = other.transform;
-            while ((currentObject.parent.name != "Drawings") && (currentObject.parent.name != "Right Grabber") && (currentObject.parent.name != "Left Grabber"))
-            {
-                currentObject = currentObject.parent;
-            }
             lineHit = true;
-            lines.Add(currentObject.gameObject);
+            lines.Add(GrabbableRoot(other.transform).gameObject);
         }
     }
 
     public void OnTriggerExit(Collider other)
     {
-        
-        if (other.gameObject.tag == "Line")
+        if (other.gameObject.tag == GrabbableTag)
         {
-            Transform currentObject = other.transform;
-            while ((currentObject.parent.name != "Drawings") && (currentObject.parent.name != "Right Grabber") && (currentObject.parent.name != "Left Grabber"))
-            {
-                currentObject = currentObject.parent;
-            }
             if (lines.Count > 0)
             {
-                lines.Remove(currentObject.gameObject);
+                lines.Remove(GrabbableRoot(other.transform).gameObject);
             }
-            
+
             if (lines.Count == 0)
             {
-                lineHit=false;
+                lineHit = false;
             }
         }
     }
@@ -49,10 +43,27 @@ public class GrabControl : MonoBehaviour
         {
             lines.Remove(deletedLine);
         }
-        
-        if(lines.Count == 0)
+
+        if (lines.Count == 0)
         {
-            lineHit=false;
+            lineHit = false;
         }
+    }
+
+    /// <summary>
+    /// Walk up to the outermost object that is not already held by a grabber. The parent
+    /// null check is load-bearing: the original loop only terminated because every grabbable
+    /// object lived under a known container, and ran off the top of the hierarchy without it.
+    /// </summary>
+    private static Transform GrabbableRoot(Transform hit)
+    {
+        Transform current = hit;
+        while (current.parent != null &&
+               current.parent.name != "Right Grabber" &&
+               current.parent.name != "Left Grabber")
+        {
+            current = current.parent;
+        }
+        return current;
     }
 }

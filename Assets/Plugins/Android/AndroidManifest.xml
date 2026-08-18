@@ -1,45 +1,43 @@
 <?xml version="1.0" encoding="utf-8" standalone="no"?>
-
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-          xmlns:tools="http://schemas.android.com/tools"
-          android:installLocation="auto">
-    <!-- Quest 6DoF head tracking. -->
-    <uses-feature android:name="android.hardware.vr.headtracking" android:version="1" android:required="true" />
-
-    <!-- Insight Passthrough. required="true" means the app is MR-only and will not install on
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools" android:installLocation="auto" xmlns:horizonos="http://schemas.horizonos/sdk">
+  <!-- Quest 6DoF head tracking. -->
+  <uses-feature android:name="android.hardware.vr.headtracking" android:version="1" android:required="true" />
+  <!-- Insight Passthrough. required="true" means the app is MR-only and will not install on
          a headset without passthrough. Change to "false" to also allow install in VR-only mode. -->
-    <uses-feature android:name="com.oculus.feature.PASSTHROUGH" android:required="true" />
-
-    <!-- Unity Relay + Netcode for GameObjects. -->
-    <uses-permission android:name="android.permission.INTERNET" />
-    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-
-    <!-- Vivox voice chat. MicPermissions.cs requests RECORD_AUDIO at runtime; if this
+  <uses-feature android:name="com.oculus.feature.PASSTHROUGH" android:required="true" />
+  <!-- Unity Relay + Netcode for GameObjects. -->
+  <uses-permission android:name="android.permission.INTERNET" />
+  <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+  <!-- Vivox voice chat. MicPermissions.cs requests RECORD_AUDIO at runtime; if this
          declaration goes missing the request always fails and voice dies silently. -->
-    <uses-permission android:name="android.permission.RECORD_AUDIO" />
-    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
-
-    <application
-        android:label="@string/app_name"
-        android:icon="@mipmap/app_icon"
-        android:allowBackup="true">
-        <activity
-            android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen"
-            android:configChanges="locale|fontScale|keyboard|keyboardHidden|mcc|mnc|navigation|orientation|screenLayout|screenSize|smallestScreenSize|touchscreen|uiMode"
-            android:launchMode="singleTask"
-            android:name="com.unity3d.player.UnityPlayerActivity"
-            android:excludeFromRecents="true"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-                <category android:name="com.oculus.intent.category.VR" />
-            </intent-filter>
-        </activity>
-        <meta-data android:name="unityplayer.SkipPermissionsDialog" android:value="false" />
-
-        <!-- MR apps must not use the black system splash background; "passthrough-contextual"
+  <uses-permission android:name="android.permission.RECORD_AUDIO" />
+  <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+  <!-- Meta spatial anchors, which is how every headset agrees on one point in the real room.
+         Without USE_ANCHOR_API every anchor call fails with Failure_SpacePermissionInsufficient;
+         IMPORT_EXPORT_IOT_MAP_DATA is the one sharing needs. -->
+  <uses-permission android:name="com.oculus.permission.USE_ANCHOR_API" />
+  <uses-permission android:name="com.oculus.permission.IMPORT_EXPORT_IOT_MAP_DATA" />
+  <!-- Hiding the Guardian, so players can walk the real room without redrawing their boundary.
+         PassthroughController requests suppression at runtime; without this permission the
+         runtime refuses. boundaryVisibilitySupport in OVRProjectConfig (MRPassthroughSetup.cs)
+         is what stops Meta's Manifest Tool removing this line again. Note this is a permission,
+         not the older com.oculus.feature.BOUNDARYLESS_APP feature tag. -->
+  <uses-permission android:name="com.oculus.permission.BOUNDARY_VISIBILITY" />
+  <application android:label="@string/app_name" android:icon="@mipmap/app_icon" android:allowBackup="false">
+    <activity android:theme="@style/Theme.AppCompat.DayNight.NoActionBar" android:configChanges="locale|fontScale|keyboard|keyboardHidden|mcc|mnc|navigation|orientation|screenLayout|screenSize|smallestScreenSize|touchscreen|uiMode" android:launchMode="singleTask" android:name="com.unity3d.player.UnityPlayerGameActivity" android:excludeFromRecents="true" android:exported="true">
+      <intent-filter>
+        <action android:name="android.intent.action.MAIN" />
+        <category android:name="android.intent.category.LAUNCHER" />
+        <category android:name="com.oculus.intent.category.VR" />
+      </intent-filter>
+      <meta-data android:name="com.oculus.vr.focusaware" android:value="true" />
+    </activity>
+    <meta-data android:name="unityplayer.SkipPermissionsDialog" android:value="false" />
+    <!-- MR apps must not use the black system splash background; "passthrough-contextual"
              fades the real room in while the app loads. Meta's Project Setup Tool enforces this. -->
-        <meta-data android:name="com.oculus.ossplash.background" android:value="passthrough-contextual" />
-    </application>
+    <meta-data android:name="com.oculus.ossplash.background" android:value="passthrough-contextual" />
+    <meta-data android:name="com.oculus.telemetry.project_guid" android:value="6b858e7d-efdb-4bd0-a358-88acf58922de" />
+    <meta-data android:name="com.oculus.supportedDevices" android:value="quest2|questpro|quest3|quest3s" />
+  </application>
+  <horizonos:uses-horizonos-sdk horizonos:minSdkVersion="60" horizonos:targetSdkVersion="205" />
 </manifest>

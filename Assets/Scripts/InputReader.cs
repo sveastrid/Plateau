@@ -161,6 +161,11 @@ public class InputReader : MonoBehaviour
             {
                 ButtonAUp=true;
                 ButtonAOn=false;
+                // Clearing Down here as well as Up below is what stops a press that lasted exactly
+                // one frame from leaving Down stuck true for the rest of the session: the branch
+                // above only ever writes Down while the button is held. Every button in this file
+                // had the same hole.
+                ButtonADown=false;
             }
             else
             {
@@ -185,6 +190,7 @@ public class InputReader : MonoBehaviour
             {
                 RightGripUp=true;
                 RightGripOn=false;
+                RightGripDown=false;
             }
             else
             {
@@ -210,6 +216,7 @@ public class InputReader : MonoBehaviour
             {
                 RightJoystickButtonUp=true;
                 RightJoystickButtonOn=false;
+                RightJoystickButtonDown=false;
             }
             else
             {
@@ -235,6 +242,7 @@ public class InputReader : MonoBehaviour
             {
                 ButtonBUp=true;
                 ButtonBOn=false;
+                ButtonBDown=false;
             }
             else
             {
@@ -265,6 +273,7 @@ public class InputReader : MonoBehaviour
             {
                 RightMainTriggerUp=true;
                 RightMainTriggerOn=false;
+                RightMainTriggerDown=false;
             }
             else
             {
@@ -357,6 +366,7 @@ public class InputReader : MonoBehaviour
             {
                 LeftJoystickButtonUp=true;
                 LeftJoystickButtonOn=false;
+                LeftJoystickButtonDown=false;
             }
             else
             {
@@ -381,6 +391,7 @@ public class InputReader : MonoBehaviour
             {
                 LeftMainTriggerUp=true;
                 LeftMainTriggerOn=false;
+                LeftMainTriggerDown=false;
             }
             else
             {
@@ -406,6 +417,7 @@ public class InputReader : MonoBehaviour
             {
                 ButtonXUp=true;
                 ButtonXOn=false;
+                ButtonXDown=false;
             }
             else
             {
@@ -431,6 +443,7 @@ public class InputReader : MonoBehaviour
             {
                 ButtonYUp=true;
                 ButtonYOn=false;
+                ButtonYDown=false;
             }
             else
             {
@@ -455,6 +468,7 @@ public class InputReader : MonoBehaviour
             {
                 LeftGripUp=true;
                 LeftGripOn=false;
+                LeftGripDown=false;
             }
             else
             {

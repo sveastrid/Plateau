@@ -1,0 +1,22 @@
+
+newmtl Standard_DC0D17
+Kd  0.8627451 0.05098039 0.09019608
+Ks  0 0 0
+Ka  0 0 0
+d  1
+Ns  0
+illum 1
+
+
+
+
+newmtl Standard_56A043
+Kd  0.3372549 0.627451 0.2627451
+Ks  0 0 0
+Ka  0 0 0
+d  1
+Ns  0
+illum 1
+
+
+
