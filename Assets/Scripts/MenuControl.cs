@@ -27,9 +27,20 @@ public class MenuControl : MonoBehaviour
     public float menuDistance = 1.3f;
     public float menuLeftOffset = 0.7f;
 
+    // A game where the pointer is also used to touch the board itself, rather than only the menu,
+    // leaves it switched on all the time. Off by default so the lobby and StairsGame keep the
+    // menu-only behaviour they were authored with.
+    public bool keepPointerAlwaysOn = false;
+
     private pointerControl currentPointer;
     private GameObject currentMenu;
     private keyInfo pressedKey;
+
+    /// <summary>
+    /// True while the menu is up. Read by anything that also wants the right trigger — the menu
+    /// owns it whenever it is open.
+    /// </summary>
+    public bool IsOpen => currentMenu != null;
 
     void Update()
     {
@@ -180,7 +191,7 @@ public class MenuControl : MonoBehaviour
         pressedKey = null;
         currentPointer = null;
 
-        if (pointer != null)
+        if (pointer != null && !keepPointerAlwaysOn)
         {
             pointer.gameObject.SetActive(false);
         }

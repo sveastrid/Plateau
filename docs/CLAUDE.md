@@ -11,9 +11,12 @@ hands. Passthrough is on, so players see each other's real faces and hands; the 
 parts of another player are two controller cones and a floating nametag.
 
 The game being built is **Plateau** — plateaus, bridges, gemhearts, chasmfiends. The rules are in
-[`plateauRules.md`](plateauRules.md). **None of those rules are implemented yet.** What exists
-today is the platform: colocation, networking, voice, the shared content frame, the world grab,
-the player ring, the menu, and two mostly-empty game scenes to put a board into.
+[`plateauRules.md`](plateauRules.md). Under it sits the platform: colocation, networking, voice, the
+shared content frame, the world grab, the player ring and the menu.
+
+Of the rules, **starting forces and piece movement are implemented** — see
+[The Plateau game](#the-plateau-game). **Turns, harvesting, buying, gemhearts, chasmfiends and win
+conditions are not**: any player may move their own pieces at any time.
 
 ## Toolchain and targets
 
@@ -124,7 +127,7 @@ Practical consequences:
 | --- | --- |
 | `OpeningScene` | Lobby. VR keyboard, room code + username entry, hosts or joins. Holds the **Network Manager**. |
 | `StairsGame` | Default game. `World Root > Board > Cube` — a placeholder. |
-| `ChasmGame` | The Plateau board: 41 `Plateau` instances and 75 `Bridge Spots` instances under `World Root > Board`. Geometry only, no rules. |
+| `ChasmGame` | The Plateau board: 41 `Plateau` instances and 81 `Bridge Spots` instances under `World Root > Board`, plus the piece system — see [The Plateau game](#the-plateau-game). |
 | `GameScene` | **Legacy.** In the build list, but absent from `GameRoutes`, so nothing can reach it. Predates the `RoomContent`/`WorldGrab` split. |
 
 A game scene's hierarchy, and the shape any new game should copy:
@@ -135,6 +138,11 @@ World Root            [RoomContent]        <- everything the game owns hangs her
     ...
 Input Reader          [InputReader]
 Menu Manager          [MenuControl]
+                                           <- ChasmGame additionally has, under World Root:
+                                              Pieces        (empty, identity, SCALE 1)
+                                              Plateau Game  [PlateauBoard, PlateauPieceView]
+                                              and at the scene root:
+                                              Plateau Controller [PlateauSelection]
 XRRig                 [XROrigin, CameraController2, OVRManager,
                        OVRPassthroughLayer, PassthroughController,
                        WorldGrab, ColocationProbe(disabled)]
@@ -249,10 +257,14 @@ Four components carry `[DefaultExecutionOrder]` and the values are load-bearing:
 
 | Order | Component | Why |
 | --- | --- | --- |
+| **−10** | `PlateauBoard` | bakes the plateau table and the adjacency graph before anything reads them. Also idempotent via `EnsureBaked()`, because `PlateauGame`'s server tick can arrive in the same frame as the scene load |
 | (default 0) | `CameraController2` | locomotion, recentre |
 | **10** | `BoardAnchor` | must run **after** `OVRSpatialAnchor.Update()` refreshes the anchor's world pose; reading it earlier gets last frame's rig baked in |
 | **15** | `RoomContent` | applies the shared board pose to `World Root` in this frame's aligned frame |
 | **20** | `PlayerControls`, `WorldGrab` | sample head/hand world poses **after** the rig has moved; at order 0 every pose broadcast is a frame stale (~13 ms at 72 Hz) on top of network latency |
+| **24** | `PointerBeam` | one `Physics.SyncTransforms()` + one raycast, after the rig and the board have both settled |
+| **25** | `PlateauSelection` | consumes the hit `PointerBeam` produced this frame |
+| **30** | `PlateauPieceView` | reconciles pieces; its `LateUpdate` billboard needs the final `World Root` pose |
 
 ## The content frame and the two-grip world grab
 
@@ -310,6 +322,191 @@ in the lobby (`GameRoutes.IsGameScene`) and for colocated players.
 **Adding a game should mean putting its board at the origin and nothing else.** If a board needs
 more room, change `PlayerRing.Radius` rather than moving boards per scene.
 
+## The Plateau game
+
+The first slice of `plateauRules.md`: starting forces, and moving pieces around the board. **Turns,
+harvesting, buying, gemhearts, chasmfiends and win conditions are not implemented** — any player may
+move their own pieces at any time. The *reachability* half of every movement rule is enforced; the
+once-per-turn cap is not.
+
+All of it lives in `Assets/Scripts/Plateau/`. A subfolder with no `.asmdef` still compiles into
+`Assembly-CSharp`, so this changes nothing structurally.
+
+### A piece is a stack
+
+One replicated `PieceStack` per **(plateau, owner, kind)** with a count — which is what
+`plateauRules.md:20` describes and what the `Count` child on each piece prefab is for. Four bytes;
+four players start the game at 16 stacks.
+
+The GameObjects are **local visuals rebuilt from replicated state**. No `NetworkObject` per piece,
+so `DefaultNetworkPrefabs.asset` is untouched and 48 stacks are not 48 spawn messages. Owner is
+`PlayerControls.spawnSlot`, the only stable per-player index in the project; it is also the colour
+index (`PlateauPalette`).
+
+### Where the state lives
+
+`PlateauGame` is a second `NetworkBehaviour` on **`Room Anchor.prefab`**, beside `RoomAnchor`. That
+object is already spawned exactly once and already survives every `LoadSceneMode.Single` switch, and
+`RoomAnchor`'s own comment already frames it as "the room-wide facts about a session". A second
+network prefab would mean editing `DefaultNetworkPrefabs.asset`, and with `ForceSamePrefabs: 1` a
+stale list is a hard connection failure with a generic error.
+
+Everything on it is server-written; the two RPCs are `RequireOwnership = false`, validate
+`p.Receive.SenderClientId` against the sender's seat, bounds-check every index, clamp the count, and
+**re-run the same `PlateauMoveRules` call the client used to draw the highlight**. The client's
+highlight is a hint; the server's answer is the rule.
+
+**Mutate the lists in place. Never `Clear()`-and-refill except on a deliberate reset** — a move is
+two `NetworkList` deltas, about 16 bytes; a clear-and-refill resends the whole board every move.
+
+**A `NetworkList`'s initial contents arrive in the spawn payload and raise no `OnListChanged`.**
+`PlateauPieceView` therefore treats `OnListChanged` as a dirty flag and does a full reconcile,
+which is also what makes a late joiner's board appear at all.
+
+### Lifecycle
+
+One server tick at 4 Hz does everything, so nothing depends on ordering:
+
+- **Pressing `Chasms` always resets the board**, even when the room is already in Chasms. That is
+  why the reset hangs off `GameSelector.RequestGameServerRpc` → `PlateauGame.HandleGameRequested`
+  and not off a scene-load event: `LoadGameScene` deliberately no-ops for the scene you are already
+  in, so a load hook would never fire for Chasms → Chasms. `HandleGameRequested` only clears; the
+  board may not be loaded yet, so handing out armies is left to the tick.
+- **Starting forces** (`plateauRules.md:31-36`): 6 troops, 2 parshendi, 1 shardbearer, 2 bridges, on
+  the central plateau.
+- **A late joiner gets their own army** and nothing else on the board moves. Implemented as "any
+  seat with no pieces gets one", polled rather than hooked on `OnClientConnectedCallback`, because
+  `spawnSlot` is assigned later, inside `PlayerControls.OnNetworkSpawn`.
+- **A player who leaves keeps their pieces.** `PlayerRing.PickFreeSlot` reuses the slot, so a
+  reconnect lands in the same seat and gets them back. The cost is that a different person taking a
+  vacated seat inherits that army.
+
+### The board graph — derived, not authored
+
+Nothing in the scene carries adjacency: no ids, no neighbour lists, no ScriptableObject. The 81
+`Bridge Spots` bars **are** the "faint line between two plateaus" of `plateauRules.md:11`, so
+`PlateauBoard` derives the graph from their geometry at `Awake`. Derived rather than baked to an
+asset because the board is still being hand-authored and a bake step would need re-running after
+every edit.
+
+- **Plateau index = sibling order under `Plateaus`.** Do not reorder those children.
+- Each bar's endpoints are `cylinder.TransformPoint(0, ±1, 0)` — Unity's cylinder spans ±1 on local
+  Y. Use the **`Cylinder` child's** transform, never the spot root's: the child is offset inside the
+  prefab, so the root is not the bar's midpoint.
+- Endpoints resolve to a plateau by an **elliptical, radius-normalised** score,
+  `((qx−cx)/rx)² + ((qz−cz)/rz)²`. Raw distance mis-assigns short bars beside large plateaus, and
+  footprints here vary fourfold in x and z *independently*.
+- Duplicate pairs collapse. Six bars around the central plateau are re-authored copies of the
+  originals and would otherwise double every central exit.
+- Everything is measured in **`World Root` local space**, which is what makes it invariant under the
+  world grab — nothing is ever re-baked when the board moves or resizes.
+
+**The server publishes the edge list; clients do not use their own.** The bake turns float geometry
+into integer indices through an argmin, and an Editor x64 host breaking a near-tie differently from
+a Quest ARM64 client would leave one of them highlighting destinations the server refuses forever,
+with no error. 162 bytes buys that away. Geometry stays local, where sub-millimetre disagreement is
+invisible; `graphHash` catches a mixed build.
+
+**Select `World Root > Plateau Game` in the Scene view before changing anything here.** The gizmo
+draws a green line for every derived connection and a red sphere on every bar it could not place,
+and `Bake and Report` on the context menu logs the same thing. A mis-authored bar has to be visible,
+not buried in a log.
+
+### Movement — `PlateauMoveRules`
+
+One place, used by the client to highlight and by the server to validate, so the two cannot disagree.
+`adj(v)` is any faint line; `bridged_s` needs one of *that player's* bridges on it.
+
+| Piece | Search |
+| --- | --- |
+| Troop | BFS over `(plateau, bridges spent ≤ 2)`, crossing only `bridged_s` |
+| Parshendi | BFS over `(plateau, jump spent)`: unlimited `bridged_s`, plus one `adj` hop |
+| Shardbearer | BFS over `(plateau, bridges ≤ 2, jump ≤ 1)`, both moves, any order |
+| Bridge | exactly one end inside the player's component (closure of the **central plateau** over their own bridges), the other end outside, and no bridge of anyone's already there |
+
+**At game start troops have zero legal destinations** — nobody has laid a bridge yet. That is the
+rules working, not a bug, which is why a selected troop with nowhere to go turns its count **red**
+instead of doing nothing. Parshendi and shardbearers can jump to the six plateaus around the centre.
+
+Readings taken where the rules are ambiguous, all commented at their use site: bridges always mean
+*your own*; shardbearer's "two bridges" is *up to* two; the jump may be taken at any point in the
+move; the bridge network is seeded with the central plateau (without that seed no first bridge could
+ever be placed and the game deadlocks); one bridge per gap regardless of owner.
+
+**A bridge is targeted by plateau, like everything else.** Every legal edge has exactly one end
+outside the player's component, so the far plateau names the gap; ties go to the lowest edge index
+on both client and server. While a bridge is selected every candidate bar is faintly tinted.
+
+### Interaction — `PlateauSelection`
+
+Idle → point at one of **your own** pieces (others do not highlight) → trigger down and up on it →
+selected. Then the count and the destination are live at the same time: **right joystick up/down**
+changes the count (1 to that stack's own size), the legal plateaus glow, and a trigger on one sends
+the move. `B` cancels; pressing the selected piece again lets it go; pressing a different own piece
+switches to it.
+
+- **Vertical, not horizontal.** `rightJoystick.x`'s Editor keyboard fallback is bound to `A`/`D`
+  (`InputManager.asset`), and `A` is `BoardAnchor.RequestReAlign`. The vertical axis falls back to
+  the arrow keys and `W`/`S`, which nothing else reads.
+- The whole thing stands down when the menu is open, when `WorldGrab.IsActive`, **or when either
+  grip is merely held** — the grab only goes active on both grips, so without that last check a
+  player squeezing one grip in preparation still has a live selection beam.
+- **No local prediction.** This project only predicts state a client holds an exclusive
+  server-granted lock on (`RoomAnchor.worldHolder`); there is no such lock for a move.
+
+### The pointer
+
+`pointerControl` is untouched — it is still a 2 m trigger capsule filtering on the tag `key`, which
+is fine for a dozen menu keys and useless for 41 plateaus (one target, no distance sorting, and
+trigger callbacks need a `Rigidbody` on the other collider, which `Key.prefab` has and plateaus do
+not). Board targeting is a separate raycast in **`PointerBeam`**, on the same object:
+
+- **`Physics.SyncTransforms()` first.** `m_AutoSyncTransforms` is `0` in this project and
+  `RoomContent` moves `World Root` during `Update`, so without it the ray hits where the board was
+  at the last `FixedUpdate`.
+- Ray from the beam's near end along the Pointer's local +Y, then a 1 cm `SphereCast` as a fallback
+  — at the smallest board scale a soldier is about a 1° target.
+- `QueryTriggerInteraction.Ignore` drops the pointer's own capsule and the grabber volumes. Menu
+  keys are **not** triggers, so the ray does hit them; that only shortens the beam.
+- `Visible Pointer` and `Dot` are on layer 2, **Ignore Raycast** — they sit directly on the ray, and
+  `Physics.DefaultRaycastLayers` already excludes that layer, so this needs no code and protects
+  every other raycast too.
+- `PointerBeam` writes the beam length **absolutely** every frame, which also masks
+  `pointerControl.OnTriggerStay`'s compounding beam maths.
+- The pointer is normally switched on only while the menu is open. `MenuControl.keepPointerAlwaysOn`
+  (ticked in ChasmGame only, default off everywhere else) leaves it on during play.
+
+### Highlighting — `MaterialPropertyBlock`, not `keyInfo`'s material swap
+
+Four reasons, and the first one decides it: every piece needs its owner's colour anyway, and twelve
+seats × three prefabs would be 36 hand-authored materials. `ClearWhite.mat` on the `Cube` disc is
+already alpha-blended, so a colour written into a property block is all it takes. Beyond that,
+`keyInfo` uses the *instantiating* `.material` accessor — harmless on three menu keys, 41 material
+instances and 41 leaks on the plateaus — and 40 of the 41 plateaus carry a per-instance
+`15/35/50.mat` override that a swap would destroy. A tint composes with what is there; a swap
+replaces it. `PlateauTint` holds one reused block and clears with `SetPropertyBlock(null)` so an
+untinted plateau rejoins the SRP batcher.
+
+The count label is TMP `.color` — a vertex colour, no material instance, no batch break.
+
+### Layout
+
+Pieces hang under an **unscaled `World Root > Pieces`**, never under `Board` (2.5, 1, 2.5) or
+`Plateaus` (2, 0.02, 2), both non-uniform. Slots are handed out by sorting a plateau's stacks by
+`(seat, kind)` — integers over a byte-identical replicated set, so every headset lays them out the
+same way — and placed on a 48-point phyllotaxis spiral fitted to `RadiusX`/`RadiusZ` **separately**,
+because plateau footprints vary fourfold on each axis independently.
+
+The `Count` labels are **billboarded**: up to twelve players stand in a ring, and the authored text
+faces one direction, so half of them would read every number backwards. Their scale is compensated
+against the content scale (clamped 1–3×) so shrinking the board does not shrink the numbers out of
+legibility — local only, deliberately not networked, like the passthrough toggle.
+
+Nothing geometric is hard-coded. `Plateau.prefab`'s collider and mesh are on a nested child that is
+offset and rotated 180°, so **the `Plateau` root's position is not the plateau's centre** — every
+centre, radius and surface height comes from `Renderer.localBounds`, and every lookup off a raycast
+hit is `GetComponentInParent`.
+
 ## Avatar replication
 
 `Player.prefab` (the `NetworkManager`'s player prefab, auto-spawned per client) carries
@@ -355,7 +552,11 @@ with no compile error.) `pointerControl` reports `keyName`, not the visible labe
 and unreachable. An unknown key is deliberately inert and logs.
 
 `pointerControl` fires on trigger colliders tagged **`key`** and stretches the visible beam to the
-hit. `GrabControl` (on `Left Grabber` / `Right Grabber`) tracks colliders tagged **`Grabbable`**;
+hit — but in a game scene `PointerBeam` overwrites the beam length absolutely every frame, and
+`MenuControl.keepPointerAlwaysOn` (ChasmGame only) leaves the pointer switched on outside the menu.
+See [The pointer](#the-pointer).
+
+`GrabControl` (on `Left Grabber` / `Right Grabber`) tracks colliders tagged **`Grabbable`**;
 nothing is tagged that today, so `WorldGrab.CanStart`'s "two grips with a piece in hand is a piece
 grab, not a world grab" check is currently always false — it is there so it does not have to be
 retrofitted the day the first piece becomes grabbable.
@@ -412,16 +613,20 @@ Control map as it stands:
 
 | Input | Effect |
 | --- | --- |
-| Right trigger | select a menu / keyboard key |
+| Right trigger | select a menu / keyboard key; in Chasms, select a piece or a destination plateau |
 | `X` | open / close the menu |
 | `A` | re-align to the room anchor (`BoardAnchor.RequestReAlign`) |
+| `B` | cancel the current piece selection (Chasms) |
 | Both grips | world grab — move, turn, resize the board |
 | Left joystick | move and snap-turn — **only when not colocated and not world-grabbing** |
 | Left joystick click | recentre the rig on the ring slot |
+| Right joystick up / down | how many pieces to move (Chasms) |
 | Right joystick click | clear the in-headset debug log |
 | `M` / `N` | tilt the rig (Editor debugging) |
 
-`B`, `Y`, and the individual grips are read nowhere, which is why `A` was free for re-align.
+`Y` and the individual grips are read nowhere. Note `rightJoystick.x` is **not** used and should
+stay that way: its Editor keyboard fallback is bound to `A`/`D` (`InputManager.asset`) and `A` is
+re-align, so a horizontal nudge in the Editor would also re-align the rig.
 
 ## Debugging in the headset
 
@@ -468,9 +673,18 @@ no null check and will throw outright. `CameraController2` and `WorldGrab` searc
 the rig* by name at any depth rather than by path, because `"Camera Offset/Left Hand"` is exactly
 the kind of hardcoded path this project keeps getting bitten by.
 
+`PlateauBoard`/`PlateauPieceView`/`PlateauSelection` add to that list: `World Root` · `Plateaus` ·
+`Bridges` · `Pieces` · `Pointer` · **`Central Plateau`** (matched by exact string; without it the
+bridge rules have no seed and the board falls back to the largest plateau with an error).
+
 **Prefab child names** are equally load-bearing: `Username`, `PlayerLeft`, `PlayerRight`,
-`mainFace`, `tornado` on `Player.prefab`. These used to be `GetChild(1)..GetChild(4)`, so
-reordering the Hierarchy produced a scrambled avatar with no error. Now a rename logs one.
+`mainFace`, `tornado` on `Player.prefab`; `Count` and `Cube` on `Soldier`, `Parshendi`,
+`Shardbearer` and `Bridge`; `Cylinder` on `Bridge Spots`. These used to be
+`GetChild(1)..GetChild(4)`, so reordering the Hierarchy produced a scrambled avatar with no error.
+Now a rename logs one.
+
+**Sibling order under `Plateaus` is the plateau index.** Reordering those 41 children renumbers the
+whole board, and the numbers are on the wire. Adding one at the end is safe.
 
 **Tags**: `key` (pointer targets) and `Grabbable` (grabber volumes). `GrabControl` also walks
 parents **by name** until it hits `Right Grabber`/`Left Grabber`.
@@ -491,9 +705,10 @@ owner-written. Every `ServerRpc` that mutates shared state validates the sender
 `GameController.joinCode` / `nickName`. `BoardAnchor.Awake` resets the alignment flag explicitly
 for this reason.
 
-**`Instance` singletons** (`BoardAnchor`, `RoomAnchor`, `RoomContent`) are set in
-`Awake`/`OnNetworkSpawn` and cleared in `OnDestroy`/`OnNetworkDespawn` guarded by
-`if (Instance == this)`. Keep that guard — `RoomAnchor` despawns and respawns on a reconnect.
+**`Instance` singletons** (`BoardAnchor`, `RoomAnchor`, `RoomContent`, `PlateauBoard`,
+`PlateauGame`, `PlateauPieceView`) are set in `Awake`/`OnNetworkSpawn` and cleared in
+`OnDestroy`/`OnNetworkDespawn` guarded by `if (Instance == this)`. Keep that guard — `RoomAnchor`
+and `PlateauGame` despawn and respawn on a reconnect.
 
 ## Dead or unwired code
 
@@ -515,7 +730,7 @@ are marked applied, corrected, or out of scope — check the code before trustin
 
 | File | Covers |
 | --- | --- |
-| [`plateauRules.md`](plateauRules.md) | The game's rules. The design target; nothing here is implemented. |
+| [`plateauRules.md`](plateauRules.md) | The game's rules. Starting forces and movement are implemented; everything else is still the design target. It says 33 plateaus and the scene has 41 — the code counts children, so the doc is the stale one. |
 | [`anchoringUpdate.md`](anchoringUpdate.md) | One anchor per room, the `World Root` content frame, the two-grip world grab. |
 | [`fixAnchoring.md`](fixAnchoring.md) | Colocated alignment, the nametag and hand-cone defects, the two-cones-and-a-name avatar. |
 | [`updates1.md`](updates1.md) | Earlier pass — root causes and ordering. |

@@ -6,8 +6,8 @@ A VR board game of plateaus, bridges, and gemhearts.
 
 ## Board Layout
 
-- The board has **33 plateaus**, including one larger **central plateau**.
-- Plateaus vary in size. Larger plateaus are more likely to receive gemhearts.
+- The board has **40 plateaus**, including one larger **central plateau**.
+- Plateaus vary in color. The colors represent the percent chance of that color being chosen.
 - A faint line between two plateaus means they can be **crossed by a bridge** or **jumped by a parshendi**.
 - All players begin on the central plateau.
 
@@ -16,8 +16,8 @@ A VR board game of plateaus, bridges, and gemhearts.
 ## VR Interaction
 
 - Each player can see how many gemhearts they currently hold.
-- Every piece sits on a colored circle indicating its owner.
-- Each piece displays a **number** showing how many of that piece type occupy the space.
+- Every piece sits on a colored square indicating its owner.
+- Each piece displays a **number** above the piece showing how many of that piece type occupy that plateau.
 - Players use a **pointer** to select pieces; the piece highlights when targeted.
 - After selecting a piece stack on a plateau, the player uses the **joystick** to choose how many of those pieces to move.
 - Plateaus that the selected piece type can legally move to are **highlighted**.
@@ -35,7 +35,7 @@ Each player begins with:
 | Shardbearer | 1 |
 | Parshendi | 2 |
 
-All starting pieces are placed on the central plateau.
+All starting pieces are placed on the central plateau.  Before the game starts, players place their first bridge one at a time, then place the second in reverse order (so that the person who placed the first bridge first will place their second bridge last).
 
 ---
 
@@ -60,8 +60,8 @@ Each piece may move **once per turn**.
 |---|---|
 | **Bridge** | One bridge may be moved per turn. It must be repositioned to span from a plateau already connected by that player's bridges to a new plateau. |
 | **Troop** | Crosses up to two bridges owned by that player per turn. |
-| **Parshendi** | Crosses as many bridges as it wants, plus one jump per turn. |
-| **Shardbearer** | Crosses two bridges plus one jump per turn. |
+| **Parshendi** | Crosses as many bridges owned by that player as it wants, plus one jump per turn. |
+| **Shardbearer** | Crosses up to two bridges owned by that player plus one jump per turn. |
 
 ---
 

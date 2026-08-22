@@ -13,10 +13,17 @@ public static class GameRoutes
     /// <summary>The game every room starts in.</summary>
     public const string DefaultGameKey = "Stairs";
 
+    /// <summary>
+    /// The Plateau board game. Named here rather than as a literal in PlateauGame so the key and
+    /// the scene cannot drift apart from the row below.
+    /// </summary>
+    public const string PlateauGameKey = "Chasms";
+    public const string PlateauSceneName = "ChasmGame";
+
     static readonly Dictionary<string, string> SceneByKey = new Dictionary<string, string>
     {
         { "Stairs", "StairsGame" },
-        { "Chasms", "ChasmGame"  },
+        { PlateauGameKey, PlateauSceneName },
     };
 
     public static string DefaultScene => SceneByKey[DefaultGameKey];

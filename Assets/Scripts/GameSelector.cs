@@ -40,6 +40,14 @@ public class GameSelector : NetworkBehaviour
             return;
         }
 
+        // Before the load, not after: picking a game a game is allowed to reset it, and
+        // LoadGameScene below deliberately does nothing when the room is already in that scene,
+        // so a scene-load hook would never fire for Chasms -> Chasms.
+        if (PlateauGame.Instance != null)
+        {
+            PlateauGame.Instance.HandleGameRequested(gameKey);
+        }
+
         LoadGameScene(sceneName);
     }
 

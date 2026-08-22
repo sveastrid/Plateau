@@ -13,6 +13,7 @@ GameObject:
   - component: {fileID: 5406320737546497381}
   - component: {fileID: 5406320737546497378}
   - component: {fileID: 5406320737546497379}
+  - component: {fileID: 5406320737546497390}
   m_Layer: 0
   m_Name: Pointer
   m_TagString: Untagged
@@ -110,10 +111,25 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 0bc03be8f6775c949acc95f2376350f3, type: 3}
-  m_Name: 
-  m_EditorClassIdentifier: 
+  m_Name:
+  m_EditorClassIdentifier:
   currentLetter:
   currentKey: {fileID: 0}
+--- !u!114 &5406320737546497390
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 5406320737546497377}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 1a2b3c4d5e6f708192a3b4c5d6e7f80a, type: 3}
+  m_Name:
+  m_EditorClassIdentifier:
+  MaxRange: 10
+  SphereRadius: 0.01
+  DefaultLength: 2
 --- !u!1 &5406320737628140679
 GameObject:
   m_ObjectHideFlags: 0
@@ -126,7 +142,7 @@ GameObject:
   - component: {fileID: 5406320737628140699}
   - component: {fileID: 5406320737628140696}
   - component: {fileID: 5406320737628140697}
-  m_Layer: 0
+  m_Layer: 2
   m_Name: Visible Pointer
   m_TagString: Untagged
   m_Icon: {fileID: 0}
@@ -225,7 +241,7 @@ GameObject:
   - component: {fileID: 5406320738454977205}
   - component: {fileID: 5406320738454977202}
   - component: {fileID: 5406320738454977203}
-  m_Layer: 0
+  m_Layer: 2
   m_Name: Dot
   m_TagString: Untagged
   m_Icon: {fileID: 0}
