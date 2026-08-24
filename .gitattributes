@@ -1,0 +1,10 @@
+* text=auto
+*.cs text diff=csharp
+*.fbx binary
+*.tga binary
+*.obj binary
+*.mtl binary
+*.exr binary
+
+# Shell scripts must keep LF endings or their shebang breaks on checkout
+.githooks/* text eol=lf

@@ -14,6 +14,9 @@
 /Assets/Resources/DevAgentSettings.asset
 /Assets/Resources/DevAgentSettings.asset.meta
 
+# Locally-fetched dev tooling (see .githooks/pre-commit)
+/.tools/
+
 # Unity's Android native-build scratch dir (gradle/CMake/ninja output for IL2CPP).
 /.utmp/
 

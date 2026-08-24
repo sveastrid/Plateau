@@ -1,0 +1,14 @@
+#!/bin/sh
+# Blocks commits that introduce secrets, using gitleaks if it's available locally.
+# Setup (one time per clone): see README "Development Setup" for how to fetch
+# the binary into .tools/gitleaks/, then run:
+#   git config core.hooksPath .githooks
+
+GITLEAKS=".tools/gitleaks/gitleaks.exe"
+
+if [ ! -x "$GITLEAKS" ]; then
+    echo "warning: gitleaks not found at $GITLEAKS - skipping secret scan (see README dev setup)"
+    exit 0
+fi
+
+"$GITLEAKS" protect --staged --redact -v
