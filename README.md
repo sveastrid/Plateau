@@ -161,6 +161,12 @@ Tools/
    - *File → Build Settings → Android → Build* to produce an APK.
    - Install on Quest via `adb install BoardGames.apk`.
 
+5. **(Optional, recommended) Enable the pre-commit secret scan**: fetch the [gitleaks](https://github.com/gitleaks/gitleaks/releases) binary for your platform into `.tools/gitleaks/`, then run:
+   ```powershell
+   git config core.hooksPath .githooks
+   ```
+   This blocks commits that would introduce API keys/tokens, matching the hook already active in this repo.
+
 ### Playing
 
 1. All players put on their headsets in the **same physical room**.
