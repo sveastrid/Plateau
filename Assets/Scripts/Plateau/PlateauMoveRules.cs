@@ -174,6 +174,12 @@ public static class PlateauMoveRules
     /// a Bridge Spot is a physical slot and two bridges cannot share it. Requiring the far end to
     /// be OUTSIDE the component is what "to a new plateau" means, and it keeps each player's
     /// network a tree rooted at the centre.
+    ///
+    /// EXCEPT the twin bar of a pair this player has already bridged: both ends are then already
+    /// inside the component, which the rule above would read as "nothing new" and drop — but the
+    /// whole point of a duplicated pair (the six central connections) is that a second, still-empty
+    /// bar to the SAME plateau is its own legal spot for that player's other bridge. See
+    /// HasOwnBridgedTwin.
     /// </summary>
     static void BridgeDestinations(in View v, List<int> results)
     {
@@ -193,17 +199,48 @@ public static class PlateauMoveRules
             {
                 continue;
             }
-            if (s_component[a] == s_component[b])
+
+            bool inA = s_component[a];
+            bool inB = s_component[b];
+            if (!inA && !inB)
             {
-                continue;                       // both inside, or both outside
+                continue;                       // neither end reachable yet
+            }
+            if (inA && inB && !HasOwnBridgedTwin(v, e))
+            {
+                continue;                       // both inside, and not the free twin of an owned bar
             }
 
-            int far = s_component[a] ? b : a;
+            int far = inA && inB ? (a == v.central ? b : a) : (inA ? b : a);
             if (!results.Contains(far))
             {
                 results.Add(far);
             }
         }
+    }
+
+    /// <summary>
+    /// True when some OTHER edge spanning the exact same pair of plateaus as <paramref name="edge"/>
+    /// already carries this player's own bridge. MaxEdgesPerPair (PlateauBoard) is 2, so there is at
+    /// most one such twin. This is what lets a player place their second bridge on the second bar of
+    /// a duplicated connection, spanning the same two plateaus their first bridge already does.
+    /// </summary>
+    static bool HasOwnBridgedTwin(in View v, int edge)
+    {
+        BridgeEdge e = v.edges[edge];
+        for (int i = 0; i < v.edges.Count; i++)
+        {
+            if (i == edge || !v.ownBridge[i])
+            {
+                continue;
+            }
+            BridgeEdge other = v.edges[i];
+            if (other.a == e.a && other.b == e.b)
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     /// <summary>
@@ -252,6 +289,9 @@ public static class PlateauMoveRules
     /// names the edge. Two legal edges can reach the same new plateau from two different connected
     /// ones; the lowest edge index wins, deterministically, so the client that drew the highlight
     /// and the server that validates it always agree.
+    ///
+    /// If newPlateau is already reached, the only legal edge is the free twin bar of a pair this
+    /// player has already bridged (HasOwnBridgedTwin) — same reasoning as BridgeDestinations.
     /// </summary>
     public static bool TryResolveBridgeEdge(in View v, int newPlateau, out int edge)
     {
@@ -264,10 +304,7 @@ public static class PlateauMoveRules
         EnsureSize(ref s_component, v.plateauCount);
         ConnectedComponent(v, s_component);
 
-        if (s_component[newPlateau])
-        {
-            return false;                       // not a NEW plateau
-        }
+        bool alreadyReached = s_component[newPlateau];
 
         List<int> at = v.incidence[newPlateau];
         if (at == null)
@@ -283,7 +320,15 @@ public static class PlateauMoveRules
                 continue;
             }
             int other = v.edges[e].Other(newPlateau);
-            if (other < v.plateauCount && s_component[other] && (edge < 0 || e < edge))
+            if (other >= v.plateauCount || !s_component[other])
+            {
+                continue;
+            }
+            if (alreadyReached && !HasOwnBridgedTwin(v, e))
+            {
+                continue;
+            }
+            if (edge < 0 || e < edge)
             {
                 edge = e;
             }
@@ -312,10 +357,23 @@ public static class PlateauMoveRules
             }
             int a = v.edges[e].a;
             int b = v.edges[e].b;
-            if (a < v.plateauCount && b < v.plateauCount && s_component[a] != s_component[b])
+            if (a >= v.plateauCount || b >= v.plateauCount)
             {
-                results.Add(e);
+                continue;
             }
+
+            bool inA = s_component[a];
+            bool inB = s_component[b];
+            if (!inA && !inB)
+            {
+                continue;
+            }
+            if (inA && inB && !HasOwnBridgedTwin(v, e))
+            {
+                continue;
+            }
+
+            results.Add(e);
         }
     }
 

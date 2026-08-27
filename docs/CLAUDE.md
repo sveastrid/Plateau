@@ -425,7 +425,7 @@ One place, used by the client to highlight and by the server to validate, so the
 | Troop | BFS over `(plateau, bridges spent ≤ 2)`, crossing only `bridged_s` |
 | Parshendi | BFS over `(plateau, jump spent)`: unlimited `bridged_s`, plus one `adj` hop |
 | Shardbearer | BFS over `(plateau, bridges ≤ 2, jump ≤ 1)`, both moves, any order |
-| Bridge | exactly one end inside the player's component (closure of the **central plateau** over their own bridges), the other end outside, and no bridge of anyone's already there |
+| Bridge | exactly one end inside the player's component (closure of the **central plateau** over their own bridges), the other end outside, and no bridge of anyone's already there — EXCEPT the free twin bar of a pair this player already bridged, both of whose ends now read as inside (`PlateauMoveRules.HasOwnBridgedTwin`) |
 
 **At game start troops have zero legal destinations** — nobody has laid a bridge yet. That is the
 rules working, not a bug, which is why a selected troop with nowhere to go turns its count **red**
