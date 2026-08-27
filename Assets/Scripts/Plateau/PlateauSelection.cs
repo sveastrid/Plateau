@@ -121,7 +121,7 @@ public class PlateauSelection : MonoBehaviour
             return;
         }
 
-        ResolveHit(out PlateauPieceTag hitPiece, out int hitPlateau);
+        ResolveHit(out PlateauPieceTag hitPiece, out int hitPlateau, out int hitEdge);
 
         if (state == State.Idle)
         {
@@ -129,7 +129,7 @@ public class PlateauSelection : MonoBehaviour
         }
         else
         {
-            UpdateSelected(game, hitPiece, hitPlateau);
+            UpdateSelected(game, hitPiece, hitPlateau, hitEdge);
         }
     }
 
@@ -179,10 +179,11 @@ public class PlateauSelection : MonoBehaviour
         return true;
     }
 
-    void ResolveHit(out PlateauPieceTag piece, out int plateau)
+    void ResolveHit(out PlateauPieceTag piece, out int plateau, out int edge)
     {
         piece = null;
         plateau = -1;
+        edge = -1;
 
         if (beam == null || !beam.HasHit || beam.Hit.collider == null)
         {
@@ -201,6 +202,13 @@ public class PlateauSelection : MonoBehaviour
         if (tag != null)
         {
             plateau = tag.index;
+            return;
+        }
+
+        PlateauEdgeTag spotTag = beam.Hit.collider.GetComponentInParent<PlateauEdgeTag>();
+        if (spotTag != null)
+        {
+            edge = spotTag.edge;
         }
     }
 
@@ -231,7 +239,7 @@ public class PlateauSelection : MonoBehaviour
 
     // ------------------------------------------------------------------ selected
 
-    void UpdateSelected(PlateauGame game, PlateauPieceTag hitPiece, int hitPlateau)
+    void UpdateSelected(PlateauGame game, PlateauPieceTag hitPiece, int hitPlateau, int hitEdge)
     {
         if (selected == null || game.boardEpoch.Value != armedEpoch)
         {
@@ -252,6 +260,17 @@ public class PlateauSelection : MonoBehaviour
 
         PlateauPieceTag mine = (hitPiece != null && hitPiece.seat == seat) ? hitPiece : null;
         SetHover(mine);                          // so the piece you would switch to lights up too
+
+        // A Bridge Spot resolves to the plateau its edge would connect to, but only when that edge
+        // is one of THIS selection's current candidates -- an occupied, unreachable or irrelevant
+        // spot resolves to nothing, the same inertness as missing a piece or a plateau outright.
+        // No-op for any non-bridge selection, since candidateEdges is only ever populated for
+        // PieceKind.Bridge.
+        if (hitEdge >= 0)
+        {
+            hitPlateau = ResolveBridgeSpotPlateau(game, hitEdge);
+        }
+
         bool overLegal = hitPlateau >= 0 && legal.Contains(hitPlateau);
         SetHoveredLegal(overLegal ? hitPlateau : -1);
 
@@ -475,6 +494,34 @@ public class PlateauSelection : MonoBehaviour
             tint.SetHighlight(legalTint, candidateStrength);
             spotTints.Add(tint);
         }
+    }
+
+    /// <summary>
+    /// The plateau a Bridge Spot hit actually targets: the endpoint of its edge that lies OUTSIDE
+    /// this selection's current bridge network -- exactly the plateau
+    /// PlateauMoveRules.BridgeDestinations would have added to `legal` for this same edge. Resolves
+    /// only when the edge is one of the already-cached candidates, so an occupied, unreachable or
+    /// irrelevant spot is inert.
+    /// </summary>
+    int ResolveBridgeSpotPlateau(PlateauGame game, int edge)
+    {
+        if (!candidateEdges.Contains(edge))
+        {
+            return -1;
+        }
+        if (!game.TryGetEdgeEnds(edge, out int a, out int b))
+        {
+            return -1;
+        }
+        if (legal.Contains(a))
+        {
+            return a;
+        }
+        if (legal.Contains(b))
+        {
+            return b;
+        }
+        return -1;                          // should not happen for a genuine candidate edge
     }
 
     void SetHoveredLegal(int plateau)

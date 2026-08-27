@@ -33,7 +33,7 @@ public class PlateauPieceTag : MonoBehaviour
     // Layout target, in the piece container's local space. Positions are smoothed toward this so
     // that a stack leaving a plateau slides its neighbours over rather than popping them.
     [System.NonSerialized] public Vector3 targetLocalPosition;
-    [System.NonSerialized] public float targetScale = 1f;
+    [System.NonSerialized] public Vector3 targetScale = Vector3.one;
     /// <summary>The prefab's authored root scale — the size a piece is on the central plateau.</summary>
     [System.NonSerialized] public float prefabScale = 1f;
     /// <summary>The Count child's authored local scale, before the billboard's compensation.</summary>

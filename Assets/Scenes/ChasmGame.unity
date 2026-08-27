@@ -191,6 +191,175 @@ Transform:
   - {fileID: 55259784}
   m_Father: {fileID: 1391043544}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!1 &4200001
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 4200002}
+  m_Layer: 0
+  m_Name: Pieces
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &4200002
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 4200001}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 1511086728}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!1 &4200003
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 4200004}
+  - component: {fileID: 4200005}
+  - component: {fileID: 4200006}
+  m_Layer: 0
+  m_Name: Plateau Game
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &4200004
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 4200003}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 1511086728}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &4200005
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 4200003}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 1a2b3c4d5e6f708192a3b4c5d6e7f805, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  worldRoot: {fileID: 1511086728}
+  plateausRoot: {fileID: 2862219}
+  bridgesRoot: {fileID: 13533680}
+  MaxEndpointScore: 4
+--- !u!114 &4200006
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 4200003}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 1a2b3c4d5e6f708192a3b4c5d6e7f808, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  worldRoot: {fileID: 1511086728}
+  piecesRoot: {fileID: 4200002}
+  bridgePrefab: {fileID: 2372926969428693170, guid: 2f8724713958ec24cbe07de5925ac3ad,
+    type: 3}
+  troopPrefab: {fileID: 5168282099423647285, guid: f69d90005af2b724ea5eb3828a3b3c9c,
+    type: 3}
+  parshendiPrefab: {fileID: 2558503896475718519, guid: fa959541a80a20a4caefb9b9b3c03ca0,
+    type: 3}
+  shardbearerPrefab: {fileID: 7221288932605882955, guid: 2daadb1da5c3c4b448135b1a910d1faa,
+    type: 3}
+  UsableFraction: 0.72
+  SurfaceLift: 0.002
+  pieceScaleMultiplier: 1
+  SmoothTime: 0.15
+  countNormalColor: {r: 1, g: 1, b: 1, a: 1}
+  countSelectedColor: {r: 1, g: 0.82, b: 0.25, a: 1}
+  countBlockedColor: {r: 1, g: 0.35, b: 0.3, a: 1}
+  MaxCountScaleCompensation: 3
+  countSelectedScale: 1.25
+--- !u!1 &4200007
+GameObject:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  serializedVersion: 6
+  m_Component:
+  - component: {fileID: 4200008}
+  - component: {fileID: 4200009}
+  m_Layer: 0
+  m_Name: Plateau Controller
+  m_TagString: Untagged
+  m_Icon: {fileID: 0}
+  m_NavMeshLayer: 0
+  m_StaticEditorFlags: 0
+  m_IsActive: 1
+--- !u!4 &4200008
+Transform:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 4200007}
+  serializedVersion: 2
+  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
+  m_LocalPosition: {x: 0, y: 0, z: 0}
+  m_LocalScale: {x: 1, y: 1, z: 1}
+  m_ConstrainProportionsScale: 0
+  m_Children: []
+  m_Father: {fileID: 0}
+  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &4200009
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 4200007}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 1a2b3c4d5e6f708192a3b4c5d6e7f809, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  inputs: {fileID: 0}
+  menu: {fileID: 0}
+  beam: {fileID: 0}
+  JoystickOn: 0.6
+  JoystickOff: 0.35
+  FirstRepeat: 0.45
+  RepeatInterval: 0.12
+  SendLockout: 1
+  hoverTint: {r: 1, g: 1, b: 1, a: 1}
+  hoverStrength: 0.45
+  legalTint: {r: 0.45, g: 0.95, b: 1, a: 1}
+  legalStrength: 0.55
+  legalHoverStrength: 0.9
+  candidateStrength: 0.35
 --- !u!1 &13533679
 GameObject:
   m_ObjectHideFlags: 0
@@ -8292,8 +8461,13 @@ PrefabInstance:
       objectReference: {fileID: 0}
     - target: {fileID: 5406320737546497376, guid: 39fb5288bbd1ae94887ae585aa01d40b,
         type: 3}
+      propertyPath: m_LocalScale.x
+      value: 0.003
+      objectReference: {fileID: 0}
+    - target: {fileID: 5406320737546497376, guid: 39fb5288bbd1ae94887ae585aa01d40b,
+        type: 3}
       propertyPath: m_LocalScale.z
-      value: 0.009999998
+      value: 0.003
       objectReference: {fileID: 0}
     - target: {fileID: 5406320737546497376, guid: 39fb5288bbd1ae94887ae585aa01d40b,
         type: 3}
@@ -8303,7 +8477,7 @@ PrefabInstance:
     - target: {fileID: 5406320737546497376, guid: 39fb5288bbd1ae94887ae585aa01d40b,
         type: 3}
       propertyPath: m_LocalPosition.y
-      value: -0.100000024
+      value: -0.02
       objectReference: {fileID: 0}
     - target: {fileID: 5406320737546497376, guid: 39fb5288bbd1ae94887ae585aa01d40b,
         type: 3}
@@ -9314,171 +9488,6 @@ Transform:
   - {fileID: 4200004}
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!1 &4200001
-GameObject:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  serializedVersion: 6
-  m_Component:
-  - component: {fileID: 4200002}
-  m_Layer: 0
-  m_Name: Pieces
-  m_TagString: Untagged
-  m_Icon: {fileID: 0}
-  m_NavMeshLayer: 0
-  m_StaticEditorFlags: 0
-  m_IsActive: 1
---- !u!4 &4200002
-Transform:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 4200001}
-  serializedVersion: 2
-  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 0, y: 0, z: 0}
-  m_LocalScale: {x: 1, y: 1, z: 1}
-  m_ConstrainProportionsScale: 0
-  m_Children: []
-  m_Father: {fileID: 1511086728}
-  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!1 &4200003
-GameObject:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  serializedVersion: 6
-  m_Component:
-  - component: {fileID: 4200004}
-  - component: {fileID: 4200005}
-  - component: {fileID: 4200006}
-  m_Layer: 0
-  m_Name: Plateau Game
-  m_TagString: Untagged
-  m_Icon: {fileID: 0}
-  m_NavMeshLayer: 0
-  m_StaticEditorFlags: 0
-  m_IsActive: 1
---- !u!4 &4200004
-Transform:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 4200003}
-  serializedVersion: 2
-  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 0, y: 0, z: 0}
-  m_LocalScale: {x: 1, y: 1, z: 1}
-  m_ConstrainProportionsScale: 0
-  m_Children: []
-  m_Father: {fileID: 1511086728}
-  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!114 &4200005
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 4200003}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 1a2b3c4d5e6f708192a3b4c5d6e7f805, type: 3}
-  m_Name:
-  m_EditorClassIdentifier:
-  worldRoot: {fileID: 1511086728}
-  plateausRoot: {fileID: 2862219}
-  bridgesRoot: {fileID: 13533680}
-  MaxEndpointScore: 4
---- !u!114 &4200006
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 4200003}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 1a2b3c4d5e6f708192a3b4c5d6e7f808, type: 3}
-  m_Name:
-  m_EditorClassIdentifier:
-  worldRoot: {fileID: 1511086728}
-  piecesRoot: {fileID: 4200002}
-  bridgePrefab: {fileID: 2372926969428693170, guid: 2f8724713958ec24cbe07de5925ac3ad, type: 3}
-  troopPrefab: {fileID: 5168282099423647285, guid: f69d90005af2b724ea5eb3828a3b3c9c, type: 3}
-  parshendiPrefab: {fileID: 2558503896475718519, guid: fa959541a80a20a4caefb9b9b3c03ca0, type: 3}
-  shardbearerPrefab: {fileID: 7221288932605882955, guid: 2daadb1da5c3c4b448135b1a910d1faa, type: 3}
-  UsableFraction: 0.72
-  SurfaceLift: 0.002
-  pieceScaleMultiplier: 1
-  SmoothTime: 0.15
-  countNormalColor: {r: 1, g: 1, b: 1, a: 1}
-  countSelectedColor: {r: 1, g: 0.82, b: 0.25, a: 1}
-  countBlockedColor: {r: 1, g: 0.35, b: 0.3, a: 1}
-  MaxCountScaleCompensation: 3
-  countSelectedScale: 1.25
---- !u!1 &4200007
-GameObject:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  serializedVersion: 6
-  m_Component:
-  - component: {fileID: 4200008}
-  - component: {fileID: 4200009}
-  m_Layer: 0
-  m_Name: Plateau Controller
-  m_TagString: Untagged
-  m_Icon: {fileID: 0}
-  m_NavMeshLayer: 0
-  m_StaticEditorFlags: 0
-  m_IsActive: 1
---- !u!4 &4200008
-Transform:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 4200007}
-  serializedVersion: 2
-  m_LocalRotation: {x: 0, y: 0, z: 0, w: 1}
-  m_LocalPosition: {x: 0, y: 0, z: 0}
-  m_LocalScale: {x: 1, y: 1, z: 1}
-  m_ConstrainProportionsScale: 0
-  m_Children: []
-  m_Father: {fileID: 0}
-  m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
---- !u!114 &4200009
-MonoBehaviour:
-  m_ObjectHideFlags: 0
-  m_CorrespondingSourceObject: {fileID: 0}
-  m_PrefabInstance: {fileID: 0}
-  m_PrefabAsset: {fileID: 0}
-  m_GameObject: {fileID: 4200007}
-  m_Enabled: 1
-  m_EditorHideFlags: 0
-  m_Script: {fileID: 11500000, guid: 1a2b3c4d5e6f708192a3b4c5d6e7f809, type: 3}
-  m_Name:
-  m_EditorClassIdentifier:
-  inputs: {fileID: 0}
-  menu: {fileID: 0}
-  beam: {fileID: 0}
-  JoystickOn: 0.6
-  JoystickOff: 0.35
-  FirstRepeat: 0.45
-  RepeatInterval: 0.12
-  SendLockout: 1
-  hoverTint: {r: 1, g: 1, b: 1, a: 1}
-  hoverStrength: 0.45
-  legalTint: {r: 0.45, g: 0.95, b: 1, a: 1}
-  legalStrength: 0.55
-  legalHoverStrength: 0.9
-  candidateStrength: 0.35
 --- !u!114 &1511086729
 MonoBehaviour:
   m_ObjectHideFlags: 0

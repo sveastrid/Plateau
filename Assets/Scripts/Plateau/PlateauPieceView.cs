@@ -37,6 +37,8 @@ public class PlateauPieceView : MonoBehaviour
     public float SurfaceLift = 0.002f;
     [Tooltip("Global size tweak on top of each prefab's authored scale.")]
     public float pieceScaleMultiplier = 1f;
+    [Tooltip("The native length of the bridge model's long (local X) axis before any scale is applied.")]
+    public float BridgeNativeLength = 0.4f;
     [Tooltip("Seconds for a piece to slide to a new slot. Snaps on its first frame.")]
     public float SmoothTime = 0.15f;
 
@@ -248,7 +250,8 @@ public class PlateauPieceView : MonoBehaviour
                     board.LocalCentre(p).z + pt.y * usableZ);
 
                 tag.targetLocalPosition = ToPieceSpace(local);
-                tag.targetScale = scale * tag.prefabScale;
+                float pieceScale = scale * tag.prefabScale;
+                tag.targetScale = new Vector3(pieceScale, pieceScale, pieceScale);
                 tag.transform.localRotation = ToPieceSpace(Quaternion.identity);
                 RefreshLabel(tag);
             }
@@ -314,7 +317,9 @@ public class PlateauPieceView : MonoBehaviour
                     Vector3 pa = board.LocalCentre(a);
                     Vector3 pb2 = board.LocalCentre(b);
                     localMid = (pa + pb2) * 0.5f;
-                    localAxis = pb2 - pa;
+                    // Half the span, matching the bar branch's convention (a unit arm off the
+                    // midpoint) — gapLength below doubles it back out.
+                    localAxis = (pb2 - pa) * 0.5f;
                 }
 
                 localMid.y = Mathf.Max(board.TopLocalY(a), board.TopLocalY(b)) + SurfaceLift;
@@ -322,16 +327,19 @@ public class PlateauPieceView : MonoBehaviour
 
                 // Yaw only. The bar carries a 90-degree roll that lays a cylinder flat; copying
                 // that to a bridge model would stand it on its side.
+                //
+                // The extra -90 degree turn is the bridge model's own long axis: bridge.obj's mesh
+                // runs along local X (about 0.4 units), not the Z that LookRotation points down the
+                // gap, so without it the plank would lie broadside across the gap instead of along it.
                 localAxis.y = 0f;
                 Quaternion rot = localAxis.sqrMagnitude > 1e-8f
-                    ? Quaternion.LookRotation(localAxis.normalized, Vector3.up)
+                    ? Quaternion.LookRotation(localAxis.normalized, Vector3.up) * Quaternion.Euler(0f, -90f, 0f)
                     : Quaternion.identity;
                 tag.transform.localRotation = ToPieceSpace(rot);
 
-                float usable = Mathf.Min(
-                    Mathf.Min(board.RadiusX(a), board.RadiusZ(a)),
-                    Mathf.Min(board.RadiusX(b), board.RadiusZ(b))) * UsableFraction;
-                tag.targetScale = PieceScale(usable, referenceUsable, 1) * tag.prefabScale;
+                float gapLength = 2f * localAxis.magnitude;
+                float xScale = gapLength / Mathf.Max(0.01f, BridgeNativeLength);
+                tag.targetScale = new Vector3(xScale, tag.prefabScale, tag.prefabScale);
             }
 
             RefreshLabel(tag);
@@ -414,8 +422,7 @@ public class PlateauPieceView : MonoBehaviour
         tag.primed = true;
 
         tr.localPosition = Vector3.Lerp(tr.localPosition, tag.targetLocalPosition, k);
-        float s = Mathf.Lerp(tr.localScale.x, tag.targetScale, k);
-        tr.localScale = new Vector3(s, s, s);
+        tr.localScale = Vector3.Lerp(tr.localScale, tag.targetScale, k);
 
         if (tag.countTransform == null)
         {
@@ -554,14 +561,16 @@ public class PlateauPieceView : MonoBehaviour
     }
 
     /// <summary>
-    /// Shrink on small plateaus, and shrink as 1/sqrt(n) once a plateau holds more than four
-    /// stacks — the rate at which the area each one gets falls. Floored so nothing vanishes.
+    /// Constant size with respect to the world regardless of plateau — the size a piece already had
+    /// on the central plateau (where the old plateau-radius-based "fit" term was always exactly 1).
+    /// Still shrinks as 1/sqrt(n) once a plateau holds more than four stacks — the rate at which the
+    /// area each one gets falls, matching the phyllotaxis layout spiral's own packing density so
+    /// pieces do not visually overlap as a plateau fills up. Floored so nothing vanishes.
     /// </summary>
     float PieceScale(float usable, float reference, int occupants)
     {
-        float fit = Mathf.Clamp(usable / reference, 0.45f, 1f);
         float crowd = Mathf.Clamp(Mathf.Sqrt(4f / Mathf.Max(1, occupants)), 0.45f, 1f);
-        return fit * crowd * Mathf.Max(0.01f, pieceScaleMultiplier);
+        return crowd * Mathf.Max(0.01f, pieceScaleMultiplier);
     }
 
     Vector3 ToPieceSpace(Vector3 worldRootLocal)
@@ -682,7 +691,7 @@ public class PlateauPieceView : MonoBehaviour
 
         tr.localRotation = Quaternion.identity;
         tr.localScale = Vector3.one * prefab.transform.localScale.x;
-        tag.targetScale = prefab.transform.localScale.x;
+        tag.targetScale = Vector3.one * prefab.transform.localScale.x;
         tag.primed = false;
 
         return tag;

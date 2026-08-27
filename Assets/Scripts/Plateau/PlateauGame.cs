@@ -598,12 +598,7 @@ public class PlateauGame : NetworkBehaviour
     public Transform SpotForEdge(int edge)
     {
         PlateauBoard board = PlateauBoard.Instance;
-        if (board == null || edge < 0 || edge >= edges.Count)
-        {
-            return null;
-        }
-        BridgeEdge e = edges[edge];
-        return board.SpotForPair(e.a, e.b);
+        return board != null ? board.SpotForEdge(edge) : null;
     }
 
     public bool TryGetEdgeEnds(int edge, out int a, out int b)

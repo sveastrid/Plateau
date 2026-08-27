@@ -396,8 +396,11 @@ every edit.
 - Endpoints resolve to a plateau by an **elliptical, radius-normalised** score,
   `((qx−cx)/rx)² + ((qz−cz)/rz)²`. Raw distance mis-assigns short bars beside large plateaus, and
   footprints here vary fourfold in x and z *independently*.
-- Duplicate pairs collapse. Six bars around the central plateau are re-authored copies of the
-  originals and would otherwise double every central exit.
+- A pair may hold up to two bars as independent edges; a third would still collapse. Six bars
+  around the central plateau are re-authored copies of the originals, and both of each pair are
+  kept — each getting its own edge index and a runtime-added `PlateauEdgeTag` (the same
+  added-at-bake-time contract as `PlateauTag`) — so two bridges can occupy that connection at once,
+  one per bar. Every other pair has exactly one bar and so still yields exactly one edge.
 - Everything is measured in **`World Root` local space**, which is what makes it invariant under the
   world grab — nothing is ever re-baked when the board moves or resizes.
 
@@ -435,7 +438,9 @@ ever be placed and the game deadlocks); one bridge per gap regardless of owner.
 
 **A bridge is targeted by plateau, like everything else.** Every legal edge has exactly one end
 outside the player's component, so the far plateau names the gap; ties go to the lowest edge index
-on both client and server. While a bridge is selected every candidate bar is faintly tinted.
+on both client and server. While a bridge is selected every candidate bar is faintly tinted, and a
+hit on the bar itself resolves to that same far plateau (`PlateauSelection.ResolveBridgeSpotPlateau`,
+via each bar's `PlateauEdgeTag`) — the tint is a legitimate click target, not just a hint to aim past.
 
 ### Interaction — `PlateauSelection`
 

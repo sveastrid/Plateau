@@ -37,6 +37,14 @@ public class PlateauBoard : MonoBehaviour
              "right on the rim, near 1.")]
     public float MaxEndpointScore = 4f;
 
+    /// <summary>
+    /// How many bars may share one plateau pair before the extra ones collapse. Two, not one: the six
+    /// central exits were re-authored on top of the originals and both bars are still in the scene, and
+    /// each should host its own bridge. Every other pair has exactly one bar in the scene, so this cap
+    /// never engages there.
+    /// </summary>
+    const int MaxEdgesPerPair = 2;
+
     struct Tile
     {
         public Transform root;
@@ -51,7 +59,7 @@ public class PlateauBoard : MonoBehaviour
 
     readonly List<BridgeEdge> edges = new List<BridgeEdge>();
     readonly List<Transform> edgeSpots = new List<Transform>();
-    readonly Dictionary<int, int> edgeByPair = new Dictionary<int, int>();
+    readonly Dictionary<int, List<int>> edgeByPair = new Dictionary<int, List<int>>();
     List<int>[] incidence = new List<int>[0];
 
     readonly List<string> rejected = new List<string>();
@@ -87,13 +95,36 @@ public class PlateauBoard : MonoBehaviour
     /// index. PlateauGame publishes the authoritative edge list from the server, and looking up by
     /// content rather than by index means a client whose own bake ordered things differently still
     /// draws the bridge in the right place.
+    ///
+    /// A pair can now have up to MaxEdgesPerPair bars (the six re-authored central connections);
+    /// this returns the lowest-indexed one. Callers that need a SPECIFIC one of the two, given an
+    /// edge index, want SpotForEdge instead.
     /// </summary>
     public Transform SpotForPair(int a, int b)
     {
-        return edgeByPair.TryGetValue(PairKey(a, b), out int e) ? edgeSpots[e] : null;
+        return edgeByPair.TryGetValue(PairKey(a, b), out List<int> list) && list.Count > 0
+            ? edgeSpots[list[0]]
+            : null;
     }
 
-    public bool TryFindEdge(int a, int b, out int edge) => edgeByPair.TryGetValue(PairKey(a, b), out edge);
+    public bool TryFindEdge(int a, int b, out int edge)
+    {
+        if (edgeByPair.TryGetValue(PairKey(a, b), out List<int> list) && list.Count > 0)
+        {
+            edge = list[0];
+            return true;
+        }
+        edge = -1;
+        return false;
+    }
+
+    /// <summary>
+    /// The bar for one edge, by its own index. Unlike SpotForPair this stays unambiguous once a pair
+    /// can have two edges (the six re-authored central connections) -- each edge index names exactly
+    /// one bar.
+    /// </summary>
+    public Transform SpotForEdge(int edge) =>
+        edge >= 0 && edge < edgeSpots.Count ? edgeSpots[edge] : null;
 
     static int PairKey(int a, int b) => a < b ? (a << 8) | b : (b << 8) | a;
 
@@ -356,17 +387,37 @@ public class PlateauBoard : MonoBehaviour
             }
 
             int key = PairKey(a, b);
-            if (edgeByPair.ContainsKey(key))
+            if (!edgeByPair.TryGetValue(key, out List<int> onThisPair))
             {
-                // The six central exits were re-authored on top of the originals; both bars are
-                // still in the scene. One connection, whichever bar came first.
+                onThisPair = new List<int>();
+                edgeByPair.Add(key, onThisPair);
+            }
+
+            if (onThisPair.Count >= MaxEdgesPerPair)
+            {
+                // A third+ bar on the same pair -- still collapsed, exactly as every duplicate was
+                // before this, just at a threshold of two instead of one.
                 duplicates.Add(spot.name + " = " + tiles[a].root.name + " <-> " + tiles[b].root.name);
                 continue;
             }
 
-            edgeByPair.Add(key, edges.Count);
+            int newEdgeIndex = edges.Count;
+            onThisPair.Add(newEdgeIndex);
             edges.Add(new BridgeEdge(a, b));
             edgeSpots.Add(spot);
+
+            if (Application.isPlaying)
+            {
+                // Same guard BakeTiles uses for PlateauTag/PlateauTint: Rebuild() can also run from
+                // the "Bake and Report" context menu in Edit mode via OnDrawGizmosSelected, and that
+                // must not leave runtime-only components on the scene.
+                PlateauEdgeTag edgeTag = spot.GetComponent<PlateauEdgeTag>();
+                if (edgeTag == null)
+                {
+                    edgeTag = spot.gameObject.AddComponent<PlateauEdgeTag>();
+                }
+                edgeTag.edge = newEdgeIndex;
+            }
         }
 
         incidence = new List<int>[tiles.Length];
