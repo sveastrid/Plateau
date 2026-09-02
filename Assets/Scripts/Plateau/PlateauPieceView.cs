@@ -28,6 +28,8 @@ public class PlateauPieceView : MonoBehaviour
     public GameObject troopPrefab;
     public GameObject parshendiPrefab;
     public GameObject shardbearerPrefab;
+    public GameObject gemheartPrefab;
+    public GameObject chasmfiendPrefab;
 
     [Header("Layout")]
     [Tooltip("Fraction of a plateau's radius the pieces are allowed to spread over.")]
@@ -635,6 +637,8 @@ public class PlateauPieceView : MonoBehaviour
             case PieceKind.Troop:       return troopPrefab;
             case PieceKind.Parshendi:   return parshendiPrefab;
             case PieceKind.Shardbearer: return shardbearerPrefab;
+            case PieceKind.Gemheart:    return gemheartPrefab;
+            case PieceKind.Chasmfiend:  return chasmfiendPrefab;
             default:                    return null;
         }
     }

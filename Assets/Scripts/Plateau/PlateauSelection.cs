@@ -19,6 +19,7 @@ public class PlateauSelection : MonoBehaviour
     public InputReader inputs;
     public MenuControl menu;
     public PointerBeam beam;
+    public PlateauSpawnMenu spawnMenu;
 
     [Header("Count selection")]
     [Tooltip("Joystick deflection that steps the count. Hysteresis against the release threshold.")]
@@ -39,7 +40,11 @@ public class PlateauSelection : MonoBehaviour
     [Range(0f, 1f)] public float legalHoverStrength = 0.9f;
     [Range(0f, 1f)] public float candidateStrength = 0.35f;
 
-    enum State { Idle, Selected }
+    [Header("Plateau selection (targets Gemheart/Chasmfiend placement)")]
+    public Color plateauSelectTint = new Color(0f, 0.7f, 0.93f);
+    [Range(0f, 1f)] public float plateauSelectStrength = 0.55f;
+
+    enum State { Idle, PlateauSelected, Selected }
 
     State state = State.Idle;
 
@@ -47,6 +52,12 @@ public class PlateauSelection : MonoBehaviour
     PlateauPieceTag hovered;
     PlateauPieceTag pressedPiece;
     int pressedPlateau = -1;
+
+    /// <summary>The plateau chosen with nothing selected, for the spawn menu's Gemheart/Chasmfiend
+    /// keys. Independent of `selected` — see TryGetSelectedPlateau.</summary>
+    int selectedPlateau = -1;
+    int hoveredPlateau = -1;
+    int pressedIdlePlateau = -1;
 
     int count = 1;
     int armedEpoch;
@@ -117,7 +128,14 @@ public class PlateauSelection : MonoBehaviour
 
         if (!Bind() || !Playable(game))
         {
-            Cancel();
+            // The spawn menu borrows the right trigger the same way Menu1 does while it is open
+            // (Playable already stands down for it via the LeftGrip check below), but unlike Menu1
+            // it must not drop whatever is currently selected -- its "-" key acts on exactly that
+            // piece (TryGetSelectedStack). Everything else that fails Playable() still hard-cancels.
+            if (spawnMenu == null || !spawnMenu.IsOpen)
+            {
+                Cancel();
+            }
             return;
         }
 
@@ -125,12 +143,36 @@ public class PlateauSelection : MonoBehaviour
 
         if (state == State.Idle)
         {
-            UpdateIdle(hitPiece);
+            UpdateIdle(hitPiece, hitPlateau);
+        }
+        else if (state == State.PlateauSelected)
+        {
+            UpdatePlateauSelected(hitPiece, hitPlateau);
         }
         else
         {
             UpdateSelected(game, hitPiece, hitPlateau, hitEdge);
         }
+    }
+
+    /// <summary>
+    /// The plateau under the cursor for PURPOSES OF PLATEAU SELECTION, unlike hitPlateau alone:
+    /// ResolveHit's PlateauPieceTag check short-circuits before it ever reaches the PlateauTag
+    /// fallback, so a plateau with anything sitting on it — a neutral Gemheart/Chasmfiend, or
+    /// another player's stack — would otherwise be unreachable by the beam. A piece already
+    /// carries the plateau it stands on, so fall back to that instead of re-raycasting.
+    /// </summary>
+    static int PlateauUnderCursor(PlateauPieceTag hitPiece, int hitPlateau)
+    {
+        if (hitPlateau >= 0)
+        {
+            return hitPlateau;
+        }
+        if (hitPiece != null && !hitPiece.IsPlacedBridge)
+        {
+            return hitPiece.plateau;
+        }
+        return -1;
     }
 
     /// <summary>
@@ -214,16 +256,22 @@ public class PlateauSelection : MonoBehaviour
 
     // ------------------------------------------------------------------ idle
 
-    void UpdateIdle(PlateauPieceTag hitPiece)
+    void UpdateIdle(PlateauPieceTag hitPiece, int hitPlateau)
     {
         // Only your own pieces light up. A highlight on a piece you cannot select would be a lie,
         // and plateauRules.md is explicit: "the piece highlights when targeted" is about yours.
         PlateauPieceTag mine = (hitPiece != null && hitPiece.seat == seat) ? hitPiece : null;
         SetHover(mine);
 
+        // With no piece of yours under the beam, bare board (or anything neutral/someone else's
+        // sitting on it) is a candidate for plateau selection instead.
+        int plateauTarget = mine == null ? PlateauUnderCursor(hitPiece, hitPlateau) : -1;
+        SetHoverPlateau(plateauTarget);
+
         if (inputs.RightMainTriggerDown)
         {
             pressedPiece = mine;
+            pressedIdlePlateau = plateauTarget;
         }
         else if (inputs.RightMainTriggerUp)
         {
@@ -233,7 +281,52 @@ public class PlateauSelection : MonoBehaviour
             {
                 Select(mine);
             }
+            else if (pressedIdlePlateau >= 0 && pressedIdlePlateau == plateauTarget)
+            {
+                SelectPlateau(pressedIdlePlateau);
+            }
             pressedPiece = null;
+            pressedIdlePlateau = -1;
+        }
+    }
+
+    /// <summary>
+    /// Mirrors UpdateIdle while a plateau (rather than a piece) is selected: your own piece still
+    /// wins and switches straight into Selected; a different plateau replaces the current one;
+    /// the current one again lets it go — same "press it again" idiom as Select()/Cancel().
+    /// </summary>
+    void UpdatePlateauSelected(PlateauPieceTag hitPiece, int hitPlateau)
+    {
+        PlateauPieceTag mine = (hitPiece != null && hitPiece.seat == seat) ? hitPiece : null;
+        SetHover(mine);
+
+        int plateauTarget = mine == null ? PlateauUnderCursor(hitPiece, hitPlateau) : -1;
+        SetHoverPlateau(plateauTarget);
+
+        if (inputs.RightMainTriggerDown)
+        {
+            pressedPiece = mine;
+            pressedIdlePlateau = plateauTarget;
+        }
+        else if (inputs.RightMainTriggerUp)
+        {
+            if (pressedPiece != null && pressedPiece == mine)
+            {
+                Select(mine);
+            }
+            else if (pressedIdlePlateau >= 0 && pressedIdlePlateau == plateauTarget)
+            {
+                if (pressedIdlePlateau == selectedPlateau)
+                {
+                    DeselectPlateau();
+                }
+                else
+                {
+                    SelectPlateau(pressedIdlePlateau);
+                }
+            }
+            pressedPiece = null;
+            pressedIdlePlateau = -1;
         }
     }
 
@@ -414,6 +507,24 @@ public class PlateauSelection : MonoBehaviour
         Cancel();
     }
 
+    /// <summary>
+    /// The plateau, seat and kind of the currently selected stack, for the spawn menu's "-" key.
+    /// False when nothing is selected, or the selection is a placed bridge -- which sits on an
+    /// edge, not "on a plateau" the way plateauRules.md and that key mean it.
+    /// </summary>
+    public bool TryGetSelectedStack(out int plateau, out int seat, out int kind)
+    {
+        plateau = seat = kind = -1;
+        if (selected == null || selected.IsPlacedBridge)
+        {
+            return false;
+        }
+        plateau = selected.plateau;
+        seat = selected.seat;
+        kind = selected.kind;
+        return true;
+    }
+
     void Cancel()
     {
         ClearHighlights();
@@ -423,6 +534,7 @@ public class PlateauSelection : MonoBehaviour
         selected = null;
         pressedPiece = null;
         pressedPlateau = -1;
+        pressedIdlePlateau = -1;
         hoveredLegalPlateau = -1;
         detent = 0;
         count = 1;
@@ -593,6 +705,90 @@ public class PlateauSelection : MonoBehaviour
         }
 
         ClearPlateauTints();
+        ClearPlateauSelection();
+    }
+
+    // ------------------------------------------------------------------ plateau selection
+
+    /// <summary>The spawn menu's Gemheart/Chasmfiend keys read this, not `selected` — see the class
+    /// doc comment on selectedPlateau.</summary>
+    public bool TryGetSelectedPlateau(out int plateau)
+    {
+        plateau = selectedPlateau;
+        return state == State.PlateauSelected && selectedPlateau >= 0;
+    }
+
+    void SelectPlateau(int plateau)
+    {
+        ClearHighlights();               // drops any piece hover/selection and legal-destination tints
+
+        state = State.PlateauSelected;
+        selectedPlateau = plateau;
+
+        PlateauBoard board = PlateauBoard.Instance;
+        PlateauTint tint = board != null ? board.TintFor(plateau) : null;
+        if (tint != null)
+        {
+            tint.SetHighlight(plateauSelectTint, plateauSelectStrength);
+        }
+    }
+
+    void DeselectPlateau()
+    {
+        ClearPlateauSelection();
+        state = State.Idle;
+    }
+
+    /// <summary>Clears both the selected plateau's own tint and any leftover hover tint. Folded into
+    /// ClearHighlights() so Select()/Cancel()/a scene change all pick it up for free.</summary>
+    void ClearPlateauSelection()
+    {
+        PlateauBoard board = PlateauBoard.Instance;
+        if (selectedPlateau >= 0 && board != null)
+        {
+            PlateauTint tint = board.TintFor(selectedPlateau);
+            if (tint != null)
+            {
+                tint.ClearHighlight();
+            }
+        }
+        selectedPlateau = -1;
+
+        SetHoverPlateau(-1);
+    }
+
+    /// <summary>
+    /// A light preview on whatever plateau the beam is over, the same idiom as SetHover for pieces.
+    /// Never overwrites the selected plateau's own (stronger) tint with this fainter one.
+    /// </summary>
+    void SetHoverPlateau(int plateau)
+    {
+        if (hoveredPlateau == plateau)
+        {
+            return;
+        }
+
+        PlateauBoard board = PlateauBoard.Instance;
+
+        if (hoveredPlateau >= 0 && hoveredPlateau != selectedPlateau && board != null)
+        {
+            PlateauTint previous = board.TintFor(hoveredPlateau);
+            if (previous != null)
+            {
+                previous.ClearHighlight();
+            }
+        }
+
+        hoveredPlateau = plateau;
+
+        if (hoveredPlateau >= 0 && hoveredPlateau != selectedPlateau && board != null)
+        {
+            PlateauTint tint = board.TintFor(hoveredPlateau);
+            if (tint != null)
+            {
+                tint.SetHighlight(hoverTint, hoverStrength);
+            }
+        }
     }
 
     void ClearPlateauTints()
@@ -642,6 +838,11 @@ public class PlateauSelection : MonoBehaviour
         {
             GameObject go = GameObject.Find("Menu Manager");
             menu = go != null ? go.GetComponent<MenuControl>() : null;
+        }
+
+        if (spawnMenu == null)
+        {
+            spawnMenu = FindFirstObjectByType<PlateauSpawnMenu>();
         }
 
         if (beam == null)

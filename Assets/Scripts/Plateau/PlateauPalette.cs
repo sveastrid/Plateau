@@ -29,6 +29,14 @@ public static class PlateauPalette
 
     public static Color DiscFor(int seat)
     {
+        if (seat < 0 || seat >= PlateauConst.MaxSeats)
+        {
+            // PlateauConst.NeutralSeat (Gemheart/Chasmfiend) and any other out-of-range seat: no
+            // owner, so no owner-colour ring. The disc's own authored colour, alpha 0.035 — see the
+            // class doc comment — already reads as invisible.
+            return new Color(1f, 1f, 1f, 0.035f);
+        }
+
         Color c = ForSeat(seat);
         c.a = DiscAlpha;
         return c;

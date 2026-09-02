@@ -13,17 +13,28 @@ public enum PieceKind : byte
     Troop       = 1,
     Parshendi   = 2,
     Shardbearer = 3,
+    Gemheart    = 4,
+    Chasmfiend  = 5,
 }
 
 public static class PlateauConst
 {
-    public const int KindCount = 4;
+    public const int KindCount = 6;
 
     /// <summary>Matches PlayerRing.SlotCount and RelayVivox's allocation of 12.</summary>
     public const int MaxSeats = 12;
 
     /// <summary>"no plateau" / "no edge". 255, not 0 — 0 is the central plateau.</summary>
     public const byte NoIndex = 255;
+
+    /// <summary>
+    /// Gemheart and Chasmfiend stacks aren't owned by any seat — plateauRules.md treats them as
+    /// board resources/hazards, not player property. Reuses NoIndex: it already fits the
+    /// (seat&lt;&lt;4)|kind packing PlateauPieceView's StackKey/SlotKey use (255&lt;&lt;4 = 4080 &lt; 4096,
+    /// the width PlateauConst.NoIndex leaves under the plateau&lt;&lt;12 term), so no encoding changes
+    /// anywhere else are needed.
+    /// </summary>
+    public const byte NeutralSeat = NoIndex;
 
     /// <summary>
     /// The starting plateau, resolved by exact name in ChasmGame. Name-based like every other
@@ -40,10 +51,11 @@ public static class PlateauConst
     public const string DiscChildName  = "Cube";
 
     /// <summary>
-    /// plateauRules.md "Starting Forces": 2 bridges, 6 troops, 2 parshendi, 1 shardbearer.
+    /// plateauRules.md "Starting Forces": 2 bridges, 6 troops, 2 parshendi, 1 shardbearer. Gemheart
+    /// and Chasmfiend get none — they are placed manually, never handed out automatically.
     /// Indexed by (int)PieceKind.
     /// </summary>
-    public static readonly byte[] StartingForces = { 2, 6, 2, 1 };
+    public static readonly byte[] StartingForces = { 2, 6, 2, 1, 0, 0 };
 
     /// <summary>plateauRules.md "Movement". -1 means unlimited.</summary>
     public static int BridgeBudget(PieceKind kind)

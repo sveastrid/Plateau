@@ -32,6 +32,12 @@ public class PlateauGame : NetworkBehaviour
     /// <summary>The adjacency graph, baked and published by the server. See PublishGraph.</summary>
     public NetworkList<BridgeEdge> edges;
     public NetworkList<PlacedBridge> placedBridges;
+    /// <summary>
+    /// Each seated player's held-gemheart count — plateauRules.md's "Each player can see how many
+    /// gemhearts they currently hold", manually adjusted for now (harvesting isn't implemented; see
+    /// CLAUDE.md). Indexed by seat, grown lazily as seats start using it.
+    /// </summary>
+    public NetworkList<byte> gemheartScores;
 
     public NetworkVariable<int> boardEpoch = new NetworkVariable<int>(
         0, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Server);
@@ -65,6 +71,7 @@ public class PlateauGame : NetworkBehaviour
         stacks = new NetworkList<PieceStack>();
         edges = new NetworkList<BridgeEdge>();
         placedBridges = new NetworkList<PlacedBridge>();
+        gemheartScores = new NetworkList<byte>();
     }
 
     public override void OnNetworkSpawn()
@@ -486,6 +493,170 @@ public class PlateauGame : NetworkBehaviour
         }
 
         placedBridges[existing] = new PlacedBridge(edge, seat);
+    }
+
+    /// <summary>
+    /// The spawn menu's "+" key: one more piece of <paramref name="kind"/> on the central plateau,
+    /// for the sender's own seat. Free and uncapped — plateauRules.md's gemheart cost ("Buying
+    /// Pieces") is not implemented yet (see CLAUDE.md), so this is the sandbox stand-in for it.
+    /// </summary>
+    [ServerRpc(RequireOwnership = false)]
+    public void RequestAddPieceServerRpc(byte kind, ServerRpcParams rpcParams = default)
+    {
+        if (!boardLive.Value || kind >= PlateauConst.KindCount)
+        {
+            return;
+        }
+
+        PlateauBoard board = PlateauBoard.Instance;
+        if (board == null || !board.IsBaked || board.CentralPlateau < 0)
+        {
+            return;
+        }
+
+        int seat = SeatForClient(rpcParams.Receive.SenderClientId);
+        if (seat < 0)
+        {
+            return;
+        }
+
+        AddPieces(board.CentralPlateau, seat, kind, 1);
+    }
+
+    /// <summary>
+    /// The spawn menu's "-" key: one fewer piece of <paramref name="kind"/> on
+    /// <paramref name="plateau"/>, for the sender's own seat. The client only offers this for a
+    /// stack it currently has selected, but FindStack re-scopes the request to the SENDER's own
+    /// seat regardless of what the client claims, so it can never shrink another player's stack.
+    /// </summary>
+    [ServerRpc(RequireOwnership = false)]
+    public void RequestRemovePieceServerRpc(byte plateau, byte kind, ServerRpcParams rpcParams = default)
+    {
+        if (!boardLive.Value || kind >= PlateauConst.KindCount)
+        {
+            return;
+        }
+
+        int seat = SeatForClient(rpcParams.Receive.SenderClientId);
+        if (seat < 0)
+        {
+            return;
+        }
+
+        int idx = FindStack(plateau, seat, kind);
+        if (idx < 0)
+        {
+            return;
+        }
+
+        RemovePieces(idx, 1);
+    }
+
+    /// <summary>
+    /// The spawn menu's Gemheart/Chasmfiend "+" keys: one more of <paramref name="kind"/> on
+    /// whichever plateau the sender has selected client-side (PlateauSelection.TryGetSelectedPlateau),
+    /// rather than always the central plateau — these two kinds aren't owned by a seat, so
+    /// AddPieces is given PlateauConst.NeutralSeat instead of the sender's own seat.
+    /// </summary>
+    [ServerRpc(RequireOwnership = false)]
+    public void RequestAddNeutralPieceServerRpc(byte plateau, byte kind, ServerRpcParams rpcParams = default)
+    {
+        if (!boardLive.Value || !IsNeutralKind(kind))
+        {
+            return;
+        }
+
+        PlateauBoard board = PlateauBoard.Instance;
+        if (board == null || !board.IsBaked || plateau >= board.PlateauCount)
+        {
+            return;
+        }
+
+        // Still must be a seated player to place one — not a free-for-all for anybody connected.
+        if (SeatForClient(rpcParams.Receive.SenderClientId) < 0)
+        {
+            return;
+        }
+
+        AddPieces(plateau, PlateauConst.NeutralSeat, kind, 1);
+    }
+
+    /// <summary>The spawn menu's Gemheart/Chasmfiend "-" keys: the neutral twin of RequestRemovePieceServerRpc.</summary>
+    [ServerRpc(RequireOwnership = false)]
+    public void RequestRemoveNeutralPieceServerRpc(byte plateau, byte kind, ServerRpcParams rpcParams = default)
+    {
+        if (!boardLive.Value || !IsNeutralKind(kind))
+        {
+            return;
+        }
+
+        if (SeatForClient(rpcParams.Receive.SenderClientId) < 0)
+        {
+            return;
+        }
+
+        int idx = FindStack(plateau, PlateauConst.NeutralSeat, kind);
+        if (idx < 0)
+        {
+            return;
+        }
+
+        RemovePieces(idx, 1);
+    }
+
+    static bool IsNeutralKind(byte kind) =>
+        kind == (byte)PieceKind.Gemheart || kind == (byte)PieceKind.Chasmfiend;
+
+    /// <summary>The spawn menu's Score "+" key. Free and manual — see the class doc comment on gemheartScores.</summary>
+    [ServerRpc(RequireOwnership = false)]
+    public void RequestAddScoreServerRpc(ServerRpcParams rpcParams = default)
+    {
+        if (!boardLive.Value)
+        {
+            return;
+        }
+
+        int seat = SeatForClient(rpcParams.Receive.SenderClientId);
+        if (seat < 0)
+        {
+            return;
+        }
+
+        EnsureScoreCapacity(seat);
+        gemheartScores[seat] = (byte)Mathf.Min(255, gemheartScores[seat] + 1);
+    }
+
+    /// <summary>The spawn menu's Score "-" key.</summary>
+    [ServerRpc(RequireOwnership = false)]
+    public void RequestSubtractScoreServerRpc(ServerRpcParams rpcParams = default)
+    {
+        if (!boardLive.Value)
+        {
+            return;
+        }
+
+        int seat = SeatForClient(rpcParams.Receive.SenderClientId);
+        if (seat < 0)
+        {
+            return;
+        }
+
+        EnsureScoreCapacity(seat);
+        gemheartScores[seat] = (byte)Mathf.Max(0, gemheartScores[seat] - 1);
+    }
+
+    void EnsureScoreCapacity(int seat)
+    {
+        while (gemheartScores.Count <= seat)
+        {
+            gemheartScores.Add(0);
+        }
+    }
+
+    /// <summary>Safe on a client: 0 for a seat that has never scored yet.</summary>
+    public int ScoreForSeat(int seat)
+    {
+        return (seat >= 0 && seat < gemheartScores.Count) ? gemheartScores[seat] : 0;
     }
 
     // ------------------------------------------------------------------ view for the rules
