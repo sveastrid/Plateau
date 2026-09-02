@@ -51,6 +51,13 @@ public class PlateauSpawnMenu : MonoBehaviour
         {
             menuInstance.SetActive(false);
             pressedKey = null;
+
+            if (pointer != null && pointer.currentKey != null)
+            {
+                pointer.currentKey.ChangeToOffMaterial();
+                pointer.currentLetter = "";
+                pointer.currentKey = null;
+            }
         }
     }
 
@@ -62,6 +69,13 @@ public class PlateauSpawnMenu : MonoBehaviour
             {
                 menuInstance.SetActive(false);
                 pressedKey = null;
+
+                if (pointer != null && pointer.currentKey != null)
+                {
+                    pointer.currentKey.ChangeToOffMaterial();
+                    pointer.currentLetter = "";
+                    pointer.currentKey = null;
+                }
             }
             return;
         }
@@ -78,6 +92,13 @@ public class PlateauSpawnMenu : MonoBehaviour
         {
             menuInstance.SetActive(false);
             pressedKey = null;
+
+            if (pointer != null && pointer.currentKey != null)
+            {
+                pointer.currentKey.ChangeToOffMaterial();
+                pointer.currentLetter = "";
+                pointer.currentKey = null;
+            }
         }
 
         if (!menuInstance.activeSelf)
