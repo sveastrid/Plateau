@@ -25,6 +25,7 @@ public class PlateauTint : MonoBehaviour
 {
     static readonly int BaseColorId = Shader.PropertyToID("_BaseColor");
     static readonly int ColorId     = Shader.PropertyToID("_Color");
+    static readonly int EmissionColorId = Shader.PropertyToID("_EmissionColor");
 
     Renderer[] renderers;
     Color[] baseColors;
@@ -104,6 +105,14 @@ public class PlateauTint : MonoBehaviour
         Apply(target, t);
     }
 
+    /// <summary>Additively brighten and emit light toward <paramref name="target"/>.</summary>
+    public void SetGlow(Color target, float t)
+    {
+        Capture();
+        highlighted = t > 0f;
+        Apply(target, t, true);
+    }
+
     /// <summary>Back to the resting colour.</summary>
     public void ClearHighlight()
     {
@@ -115,7 +124,7 @@ public class PlateauTint : MonoBehaviour
         Apply(Color.clear, 0f);
     }
 
-    void Apply(Color target, float t)
+    void Apply(Color target, float t, bool glow = false)
     {
         for (int i = 0; i < renderers.Length; i++)
         {
@@ -133,13 +142,25 @@ public class PlateauTint : MonoBehaviour
                 continue;
             }
 
-            Color c = t <= 0f ? baseColors[i] : Color.Lerp(baseColors[i], target, t);
-            // Keep the resting alpha: it is what makes the owner disc visible and the plateau
-            // opaque, and a highlight colour has no business changing either.
-            c.a = baseColors[i].a;
-
             r.GetPropertyBlock(block);
-            block.SetColor(propertyIds[i], c);
+
+            if (glow && t > 0f)
+            {
+                Color c = baseColors[i] + (target * t);
+                c.a = baseColors[i].a;
+                block.SetColor(propertyIds[i], c);
+                block.SetColor(EmissionColorId, target * t);
+            }
+            else
+            {
+                Color c = t <= 0f ? baseColors[i] : Color.Lerp(baseColors[i], target, t);
+                // Keep the resting alpha: it is what makes the owner disc visible and the plateau
+                // opaque, and a highlight colour has no business changing either.
+                c.a = baseColors[i].a;
+                block.SetColor(propertyIds[i], c);
+                block.SetColor(EmissionColorId, Color.clear);
+            }
+
             r.SetPropertyBlock(block);
         }
     }

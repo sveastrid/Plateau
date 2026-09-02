@@ -729,7 +729,7 @@ public class PlateauSelection : MonoBehaviour
         PlateauTint tint = board != null ? board.TintFor(plateau) : null;
         if (tint != null)
         {
-            tint.SetHighlight(plateauSelectTint, plateauSelectStrength);
+            tint.SetGlow(plateauSelectTint, plateauSelectStrength);
         }
     }
 
