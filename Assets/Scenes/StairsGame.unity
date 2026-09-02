@@ -2121,6 +2121,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   inputs: {fileID: 1921305717}
   Menu1: {fileID: 2083444880163588049, guid: 79a1e9005c57eb342b7e77078e506337, type: 3}
+  Menu2: {fileID: 4136341099555017942, guid: ef53a6ff976a27f4b97fbc400d772a27, type: 3}
   myCam: {fileID: 1497335991}
   pointer: {fileID: 1410623592}
   worldRoot: {fileID: 0}

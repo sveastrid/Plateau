@@ -8,7 +8,6 @@ using Unity.Netcode;
 using Unity.Services.Relay;
 //using Unity.Services.Authentication;
 using Unity.Services.Core;
-using Unity.Services.Vivox;
 using Unity.Collections;
 using System.Threading.Tasks;
 using UnityEngine.UI;

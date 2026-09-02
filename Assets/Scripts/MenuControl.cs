@@ -13,7 +13,10 @@ using UnityEngine;
 public class MenuControl : MonoBehaviour
 {
     public InputReader inputs;
+    // Two menus, differing only in the Voice Chat key: Menu1 has it, Menu2 does not. Voice is a
+    // room-wide billed service, so only the host is offered the switch — see OpenMenu1.
     public GameObject Menu1;
+    public GameObject Menu2;
     public Transform myCam;
     public Transform pointer;
     // Optional. Switched off while the menu is open so the game underneath cannot be
@@ -31,6 +34,9 @@ public class MenuControl : MonoBehaviour
     // leaves it switched on all the time. Off by default so the lobby and StairsGame keep the
     // menu-only behaviour they were authored with.
     public bool keepPointerAlwaysOn = false;
+
+    // Matches the keyName on the key in Menu1.prefab exactly, space included.
+    private const string VoiceKey = "Voice Chat";
 
     private pointerControl currentPointer;
     private GameObject currentMenu;
@@ -102,6 +108,11 @@ public class MenuControl : MonoBehaviour
                 CloseMenu();
                 break;
 
+            case VoiceKey:
+                ToggleVoice();
+                CloseMenu();
+                break;
+
             case "Stairs":
             case "Chasms":
                 RequestGame(keyName);
@@ -138,19 +149,8 @@ public class MenuControl : MonoBehaviour
     /// </summary>
     private void RequestGame(string gameKey)
     {
-        // myPlayer is set by PlayerControls.Setup(). After a scene switch this MenuControl is a
-        // brand-new instance in a brand-new scene, so fall back to asking Netcode directly rather
-        // than depending on rebind order.
-        if (myPlayer == null)
-        {
-            NetworkManager nm = NetworkManager.Singleton;
-            if (nm != null && nm.LocalClient != null && nm.LocalClient.PlayerObject != null)
-            {
-                myPlayer = nm.LocalClient.PlayerObject.GetComponent<PlayerControls>();
-            }
-        }
-
-        GameSelector selector = myPlayer != null ? myPlayer.GetComponent<GameSelector>() : null;
+        PlayerControls me = ResolveMyPlayer();
+        GameSelector selector = me != null ? me.GetComponent<GameSelector>() : null;
         if (selector == null)
         {
             Debug.LogWarning("MenuControl: no local player yet, cannot switch to '" + gameKey + "'.");
@@ -162,15 +162,34 @@ public class MenuControl : MonoBehaviour
 
     public void OpenMenu1()
     {
-        if (Menu1 == null || myCam == null)
+        // The host gets the menu with the Voice Chat key; everybody else gets the one without it.
+        // If the local player cannot be resolved yet — it arrives a moment after a scene switch —
+        // this reads as "not the host", which is the safe way round.
+        bool isRoomOwner = LocalPlayerIsRoomOwner();
+        GameObject prefab = isRoomOwner ? Menu1 : Menu2;
+
+        if (prefab == null && !isRoomOwner)
         {
-            Debug.LogWarning("MenuControl: Menu1 prefab or myCam is not assigned; cannot open the menu.");
+            // An unassigned Menu2 must not stop a client opening the menu at all — they would lose
+            // game switching and Place Anchor with it. SetVoiceEnabledServerRpc rejects a non-host
+            // sender regardless, so the worst case here is a key that does nothing.
+            Debug.LogWarning("MenuControl: Menu2 is not assigned on " + name + ", so the client " +
+                             "menu falls back to the host one. The Voice Chat key will show but " +
+                             "will be inert.");
+            prefab = Menu1;
+        }
+
+        if (prefab == null || myCam == null)
+        {
+            Debug.LogWarning("MenuControl: menu prefab or myCam is not assigned; cannot open the menu.");
             return;
         }
 
-        currentMenu = Instantiate(Menu1, myCam.position + menuDistance * myCam.forward.normalized, Quaternion.identity);
+        currentMenu = Instantiate(prefab, myCam.position + menuDistance * myCam.forward.normalized, Quaternion.identity);
         currentMenu.transform.rotation = myCam.rotation;
         currentMenu.transform.position += -menuLeftOffset * currentMenu.transform.right;
+
+        ShowVoiceState();
 
         if (worldRoot != null)
         {
@@ -209,6 +228,94 @@ public class MenuControl : MonoBehaviour
         {
             currentMenu.transform.position = myCam.position + myCam.forward.normalized;
             currentMenu.transform.rotation = myCam.rotation;
+        }
+    }
+
+    /// <summary>
+    /// myPlayer is set by PlayerControls.Setup(). After a scene switch this MenuControl is a
+    /// brand-new instance in a brand-new scene, so fall back to asking Netcode directly rather
+    /// than depending on rebind order.
+    /// </summary>
+    private PlayerControls ResolveMyPlayer()
+    {
+        if (myPlayer == null)
+        {
+            NetworkManager nm = NetworkManager.Singleton;
+            if (nm != null && nm.LocalClient != null && nm.LocalClient.PlayerObject != null)
+            {
+                myPlayer = nm.LocalClient.PlayerObject.GetComponent<PlayerControls>();
+            }
+        }
+
+        return myPlayer;
+    }
+
+    private bool LocalPlayerIsRoomOwner()
+    {
+        PlayerControls me = ResolveMyPlayer();
+        return me != null && me.GetIsRoomOwner();
+    }
+
+    /// <summary>
+    /// Ask the server to flip voice chat for the whole room. This deliberately does not call
+    /// RelayVivox: the host reacts to its own replicated change through the same RoomAnchor path
+    /// as everybody else, so there is one code path and the host cannot end up out of step with
+    /// the room it is setting.
+    /// </summary>
+    private void ToggleVoice()
+    {
+        if (RoomAnchor.Instance == null)
+        {
+            Debug.LogWarning("MenuControl: no RoomAnchor, so there is no room to switch voice for. " +
+                             "BoardAnchor spawns it once the server has started.");
+            return;
+        }
+
+        RoomAnchor.Instance.SetVoiceEnabledServerRpc(!RoomAnchor.Instance.voiceEnabled.Value);
+    }
+
+    /// <summary>
+    /// Label the Voice Chat key with the room's current setting, so the host can tell what state
+    /// they are in without asking somebody. The menu is rebuilt on every open and destroyed on
+    /// close, so doing this once here is enough — there is no live menu to update if the value
+    /// changes while the menu is shut.
+    /// </summary>
+    private void ShowVoiceState()
+    {
+        if (currentMenu == null || RoomAnchor.Instance == null)
+        {
+            return;
+        }
+
+        bool on = RoomAnchor.Instance.voiceEnabled.Value;
+        keyInfo[] keys = currentMenu.GetComponentsInChildren<keyInfo>(true);
+
+        for (int i = 0; i < keys.Length; i++)
+        {
+            if (keys[i].keyName != VoiceKey)
+            {
+                continue;
+            }
+
+            // keyInfo.Start() rewrites a key's label with its keyName, and on a menu instantiated
+            // this frame it has not run yet. overrideNameChange is the flag that stops it, so the
+            // ON/OFF text set here is not silently overwritten a moment later.
+            keys[i].overrideNameChange = true;
+            if (keys[i].keyLabel != null)
+            {
+                keys[i].keyLabel.SetText(on ? "Voice Chat: ON" : "Voice Chat: OFF");
+            }
+
+            if (on)
+            {
+                keys[i].KeepOn();
+            }
+            else
+            {
+                keys[i].TurnOff();
+            }
+
+            return;
         }
     }
 

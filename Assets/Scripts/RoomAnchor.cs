@@ -53,6 +53,16 @@ public class RoomAnchor : NetworkBehaviour
     public NetworkVariable<ulong> worldHolder = new NetworkVariable<ulong>(
         NoHolder, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Server);
 
+    // --- Voice chat, for the whole room. Off by default and host-controlled: the common case for
+    // this game is everybody sitting at one real table, where Vivox costs money to deliver audio
+    // people can already hear, and adds an echo of themselves on top. It lives here rather than on
+    // the player because it is a fact about the room, and because a late joiner then picks up the
+    // room's answer in the same replication pass as the anchor and the board placement.
+    public NetworkVariable<bool> voiceEnabled = new NetworkVariable<bool>(
+        false, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Server);
+
+    private RelayVivox voice;
+
     public override void OnNetworkSpawn()
     {
         Instance = this;
@@ -63,6 +73,18 @@ public class RoomAnchor : NetworkBehaviour
             // not lock the board for the rest of the session.
             NetworkManager.Singleton.OnClientDisconnectCallback += HandleClientDisconnect;
         }
+
+        // Voice is driven from here for the host as well as for clients, so there is a single path
+        // to reason about and the host cannot drift out of step with the room it is setting.
+        voice = NetworkManager.Singleton != null
+                    ? NetworkManager.Singleton.GetComponent<RelayVivox>()
+                    : null;
+
+        // Apply before subscribing, and apply unconditionally: Netcode does not raise
+        // OnValueChanged for the value a client arrives already holding, so a late joiner entering
+        // a room that has voice switched on would otherwise sit there silent.
+        ApplyVoice(voiceEnabled.Value);
+        voiceEnabled.OnValueChanged += HandleVoiceEnabledChanged;
     }
 
     public override void OnNetworkDespawn()
@@ -71,6 +93,7 @@ public class RoomAnchor : NetworkBehaviour
         {
             NetworkManager.Singleton.OnClientDisconnectCallback -= HandleClientDisconnect;
         }
+        voiceEnabled.OnValueChanged -= HandleVoiceEnabledChanged;
         if (Instance == this)
         {
             Instance = null;
@@ -121,5 +144,45 @@ public class RoomAnchor : NetworkBehaviour
     {
         anchorGroup.Value = group;
         anchorUuid.Value = uuid;
+    }
+
+    /// <summary>
+    /// Switch voice chat on or off for the whole room. Only the host has a key for this — the
+    /// client menu prefab does not carry one — but the check is here rather than only in the UI,
+    /// so a modified client cannot start billing everybody's voice minutes.
+    ///
+    /// The host is the server in this project (RelayVivox.CreateRelay calls StartHost), so "the
+    /// room owner" and "the sender is the server" are the same test.
+    /// </summary>
+    [ServerRpc(RequireOwnership = false)]
+    public void SetVoiceEnabledServerRpc(bool on, ServerRpcParams p = default)
+    {
+        if (p.Receive.SenderClientId != NetworkManager.ServerClientId)
+        {
+            return;                       // not the host; not theirs to decide
+        }
+        voiceEnabled.Value = on;
+    }
+
+    private void HandleVoiceEnabledChanged(bool previous, bool current)
+    {
+        ApplyVoice(current);
+    }
+
+    private void ApplyVoice(bool on)
+    {
+        // Nothing to do when voice has never been switched on, which is the whole point: a room
+        // that leaves this alone never touches Vivox at all.
+        if (voice == null)
+        {
+            if (on)
+            {
+                Debug.LogWarning("RoomAnchor: voice was switched on but there is no RelayVivox on " +
+                                 "the NetworkManager object, so nobody will hear anything.");
+            }
+            return;
+        }
+
+        voice.ApplyVoiceState(on);
     }
 }
