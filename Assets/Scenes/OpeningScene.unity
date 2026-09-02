@@ -553,8 +553,8 @@ MonoBehaviour:
   m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 4cc70fb7d2134ca48293220ac991e376, type: 3}
-  m_Name:
-  m_EditorClassIdentifier:
+  m_Name: 
+  m_EditorClassIdentifier: 
   roomAnchorPrefab: {fileID: 7263011840275319001, guid: d94b95cb4a174cdd86d23b9d9a7dc2bb,
     type: 3}
   LocalizeTimeoutSeconds: 8
@@ -3672,6 +3672,8 @@ MonoBehaviour:
   RotationAngle: 20
   RotationSpeed: 0.5
   MovingSpeed: 3
+  MaxAnchorHeightDisagreement: 0.25
+  HeightWarningIntervalSeconds: 5
 --- !u!114 &1746949696
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -3843,6 +3845,7 @@ MonoBehaviour:
   targetCamera: {fileID: 330585545}
   vrSkybox: {fileID: 2100000, guid: 68fcb37f39e13a44d8ab3090b54247e5, type: 2}
   startInPassthrough: 1
+  suppressBoundary: 1
 --- !u!1 &1748699397
 GameObject:
   m_ObjectHideFlags: 0
