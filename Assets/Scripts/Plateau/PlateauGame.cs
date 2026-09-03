@@ -28,6 +28,9 @@ public class PlateauGame : NetworkBehaviour
     /// <summary>How often the server reconciles the board. Cheap; nothing here is per-frame work.</summary>
     const float ServerTickSeconds = 0.25f;
 
+    /// <summary>How long after RequestSpinChooserServerRpc the Plateau Chooser's spin resolves.</summary>
+    const float ChooserSpinSeconds = 2f;
+
     public NetworkList<PieceStack> stacks;
     /// <summary>The adjacency graph, baked and published by the server. See PublishGraph.</summary>
     public NetworkList<BridgeEdge> edges;
@@ -49,6 +52,35 @@ public class PlateauGame : NetworkBehaviour
     public NetworkVariable<bool> boardLive = new NetworkVariable<bool>(
         false, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Server);
 
+    /// <summary>Bumped when a Plateau Chooser spin is requested; clients treat any change as
+    /// "(re)start your local shuffle flourish". See RequestSpinChooserServerRpc.</summary>
+    public NetworkVariable<int> chooserSpinEpoch = new NetworkVariable<int>(
+        0, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Server);
+
+    /// <summary>
+    /// Bumped when a Plateau Chooser spin RESOLVES (about ChooserSpinSeconds after chooserSpinEpoch).
+    /// A second epoch rather than driving PlateauChooser off chooserMaterialIndex/
+    /// chooserChasmfiendActive's own OnValueChanged directly: NetworkVariable&lt;T&gt;.Value's setter
+    /// only marks the variable dirty -- and so only ever sends it, and only ever fires
+    /// OnValueChanged on a client -- when the new value differs from the old one. With only three
+    /// materials and a bool, a spin landing on the same answer as the previous one is common enough
+    /// that clients would sometimes never be told the spin resolved. A monotonically increasing
+    /// counter can't collide with its own previous value, so this always fires -- the same reason
+    /// boardEpoch, not the lists it accompanies, is what UpdateSelected keys its staleness check off of.
+    /// </summary>
+    public NetworkVariable<int> chooserResultEpoch = new NetworkVariable<int>(
+        0, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Server);
+
+    /// <summary>The Plateau Chooser's current material: 0=15.mat (15%), 1=35.mat (35%), 2=50.mat
+    /// (50%). Default 2 matches what "Plateau Chooser" is authored with in ChasmGame.unity.</summary>
+    public NetworkVariable<byte> chooserMaterialIndex = new NetworkVariable<byte>(
+        2, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Server);
+
+    /// <summary>Whether the Plateau Chooser's Chasmfiend child is active. Default false matches its
+    /// authored state (m_IsActive: 0) in ChasmGame.unity.</summary>
+    public NetworkVariable<bool> chooserChasmfiendActive = new NetworkVariable<bool>(
+        false, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Server);
+
     /// <summary>Raised whenever anything about the board changes. PlateauPieceView listens.</summary>
     public event System.Action BoardChanged;
 
@@ -64,6 +96,11 @@ public class PlateauGame : NetworkBehaviour
     readonly List<int> serverScratch = new List<int>();
 
     float nextTick;
+
+    // Plateau Chooser: server-only spin-timer state, not replicated (chooserSpinEpoch/
+    // chooserResultEpoch are what clients actually observe).
+    bool chooserSpinPending;
+    float chooserResolveAt = -1f;
 
     void Awake()
     {
@@ -100,6 +137,14 @@ public class PlateauGame : NetworkBehaviour
         placedBridges.OnListChanged -= HandleBridgesChanged;
         edges.OnListChanged -= HandleEdgesChanged;
         boardEpoch.OnValueChanged -= HandleEpochChanged;
+
+        // A spin in flight when this despawns (RoomAnchor despawns and respawns on a reconnect --
+        // see the Instance guard below) must not leave chooserSpinPending stuck true forever. A
+        // freshly Instantiated PlateauGame already gets false/-1 from the field initializers above;
+        // this line only matters if Netcode ever re-spawns THIS SAME instance instead of a new one,
+        // and costs nothing either way.
+        chooserSpinPending = false;
+        chooserResolveAt = -1f;
 
         if (IsServer && NetworkManager.Singleton != null && NetworkManager.Singleton.SceneManager != null)
         {
@@ -156,11 +201,27 @@ public class PlateauGame : NetworkBehaviour
         boardEpoch.Value = boardEpoch.Value + 1;
         nextTick = 0f;
 
+        // Deliberately NOT touched: the Plateau Chooser is not one of the 41 tracked plateaus and
+        // has no gameplay consequence today, so a "Chasms" reset leaves whatever it last landed on
+        // in place instead of snapping back to its authored 50.mat / inactive-Chasmfiend defaults.
+        // To reset it too, add: chooserMaterialIndex.Value = 2; chooserChasmfiendActive.Value =
+        // false; -- but do NOT bump chooserSpinEpoch here, or every client would replay the shuffle
+        // flourish on every scene load.
+
         Debug.Log("PlateauGame: board reset.");
     }
 
     void Update()
     {
+        // Independent of the quarter-second tick below, and not gated on boardLive -- see
+        // RequestSpinChooserServerRpc's doc comment for why a resolve landing near a board reset is
+        // harmless. Checked every frame so the ~2 second delay lands on the frame it's actually due,
+        // not up to ServerTickSeconds late.
+        if (IsServer && IsSpawned && chooserResolveAt >= 0f && Time.unscaledTime >= chooserResolveAt)
+        {
+            ResolveChooserSpin();
+        }
+
         if (!IsSpawned || !IsServer || Time.unscaledTime < nextTick)
         {
             return;
@@ -657,6 +718,61 @@ public class PlateauGame : NetworkBehaviour
     public int ScoreForSeat(int seat)
     {
         return (seat >= 0 && seat < gemheartScores.Count) ? gemheartScores[seat] : 0;
+    }
+
+    /// <summary>
+    /// The Plateau Chooser: a novelty prop at ChasmGame's scene root (see PlateauChooser.cs), not
+    /// one of the 41 tracked plateaus -- it never touches stacks/edges/placedBridges. Seated-only
+    /// anyway, purely to keep every ServerRpc in this file requiring the same thing; drop the
+    /// SeatForClient check below if a spectator should be able to trigger it too.
+    ///
+    /// chooserSpinPending blocks a second click from restarting or stacking the delay -- the spin
+    /// already in flight just keeps running. ResolveChooserSpin, not this method, picks the
+    /// outcome, ChooserSpinSeconds later (see Update()).
+    /// </summary>
+    [ServerRpc(RequireOwnership = false)]
+    public void RequestSpinChooserServerRpc(ServerRpcParams rpcParams = default)
+    {
+        if (!boardLive.Value || chooserSpinPending)
+        {
+            return;
+        }
+
+        if (SeatForClient(rpcParams.Receive.SenderClientId) < 0)
+        {
+            return;
+        }
+
+        chooserSpinPending = true;
+        chooserResolveAt = Time.unscaledTime + ChooserSpinSeconds;
+        chooserSpinEpoch.Value = chooserSpinEpoch.Value + 1;
+    }
+
+    /// <summary>
+    /// Fires ChooserSpinSeconds after RequestSpinChooserServerRpc (see Update()). Picks the Plateau
+    /// Chooser's final material -- 15.mat 15% of the time, 35.mat 35%, 50.mat 50%, the same tiers
+    /// plateauRules.md ties to plateau size -- and, independently, whether its Chasmfiend child
+    /// wakes up (30%).
+    /// </summary>
+    void ResolveChooserSpin()
+    {
+        chooserResolveAt = -1f;
+        chooserSpinPending = false;
+
+        chooserMaterialIndex.Value = RollChooserMaterialIndex();
+        chooserChasmfiendActive.Value = UnityEngine.Random.value < 0.30f;
+        chooserResultEpoch.Value = chooserResultEpoch.Value + 1;
+    }
+
+    /// <summary>0 (15%) / 1 (35%) / 2 (50%). The project's first use of UnityEngine.Random.</summary>
+    static byte RollChooserMaterialIndex()
+    {
+        float r = UnityEngine.Random.value;
+        if (r < 0.15f)
+        {
+            return 0;
+        }
+        return r < 0.50f ? (byte)1 : (byte)2;
     }
 
     // ------------------------------------------------------------------ view for the rules

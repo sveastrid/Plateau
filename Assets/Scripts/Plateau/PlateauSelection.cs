@@ -42,7 +42,11 @@ public class PlateauSelection : MonoBehaviour
 
     [Header("Plateau selection (targets Gemheart/Chasmfiend placement)")]
     public Color plateauSelectTint = new Color(0f, 0.7f, 0.93f);
-    [Range(0f, 1f)] public float plateauSelectStrength = 0.55f;
+    [Range(0f, 1f)] public float plateauSelectStrength = 0.65f;
+    [Tooltip("How far the tint pulses above/below plateauSelectStrength, so the selected plateau " +
+             "keeps reading clearly instead of blending into a static tint.")]
+    [Range(0f, 1f)] public float plateauSelectPulseDepth = 0.25f;
+    public float plateauSelectPulseSpeed = 5f;
 
     enum State { Idle, PlateauSelected, Selected }
 
@@ -297,6 +301,8 @@ public class PlateauSelection : MonoBehaviour
     /// </summary>
     void UpdatePlateauSelected(PlateauPieceTag hitPiece, int hitPlateau)
     {
+        UpdateSelectedPlateauPulse();
+
         PlateauPieceTag mine = (hitPiece != null && hitPiece.seat == seat) ? hitPiece : null;
         SetHover(mine);
 
@@ -725,12 +731,22 @@ public class PlateauSelection : MonoBehaviour
         state = State.PlateauSelected;
         selectedPlateau = plateau;
 
+        UpdateSelectedPlateauPulse();    // immediate feedback; UpdatePlateauSelected keeps it pulsing
+    }
+
+    /// <summary>Re-applies the selected plateau's tint with a gentle sine pulse on top of
+    /// plateauSelectStrength, so it keeps reading clearly on a busy board instead of blending into
+    /// a static highlight.</summary>
+    void UpdateSelectedPlateauPulse()
+    {
         PlateauBoard board = PlateauBoard.Instance;
-        PlateauTint tint = board != null ? board.TintFor(plateau) : null;
-        if (tint != null)
+        PlateauTint tint = board != null ? board.TintFor(selectedPlateau) : null;
+        if (tint == null)
         {
-            tint.SetGlow(plateauSelectTint, plateauSelectStrength);
+            return;
         }
+        float pulse = plateauSelectPulseDepth * Mathf.Sin(Time.unscaledTime * plateauSelectPulseSpeed);
+        tint.SetHighlight(plateauSelectTint, Mathf.Clamp01(plateauSelectStrength + pulse));
     }
 
     void DeselectPlateau()
