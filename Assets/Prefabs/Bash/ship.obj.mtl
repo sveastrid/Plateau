@@ -1,0 +1,33 @@
+
+newmtl Standard_4E3120
+Kd  0.3058824 0.1921569 0.1254902
+Ks  0 0 0
+Ka  0 0 0
+d  1
+Ns  0
+illum 2
+
+
+
+
+newmtl Standard_2D2D2D
+Kd  0.1764706 0.1764706 0.1764706
+Ks  0 0 0
+Ka  0 0 0
+d  1
+Ns  0
+illum 2
+
+
+
+
+newmtl Standard_FFFFFF
+Kd  1 1 1
+Ks  0 0 0
+Ka  0 0 0
+d  1
+Ns  0
+illum 2
+
+
+

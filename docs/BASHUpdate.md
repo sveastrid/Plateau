@@ -1,5 +1,11 @@
 # BASHUpdate.md — bringing BASH into MRBoardGame2 as a third game
 
+> **Status: applied.** Everything below §1–§10 has been done except where §14 says otherwise —
+> read [§14](#14-where-the-port-came-out-different) before trusting a detail in the body, because
+> four things in the plan turned out to be wrong about the source scene or about Netcode. The
+> verification list in §11 has **not** been run: none of it can be, without a headset and a second
+> client. See §11 for what to do first.
+
 A plan, in the shape of the other docs in this folder: what BASH is, what it assumes, where those
 assumptions collide with this project, and the ordered work to resolve them. Read
 [`CLAUDE.md`](CLAUDE.md) first — especially [Adding a game], [The persistent rig] and
@@ -596,3 +602,115 @@ In order, because each step's failure mode masks the next:
 
 Nothing in `Assets/Scripts/Plateau/`, `PersistentRig.prefab`, `Player.prefab`, `Room Anchor.prefab`,
 `OpeningScene`, `StairsGame` or `ChasmGame` is touched.
+
+---
+
+## 14. Where the port came out different
+
+Written after the fact. The plan above is left as it was; this is the delta.
+
+### Corrections to the plan
+
+**§0 — `BASH_U6` is on Unity `6000.5.4f1` now, not `6000.0.31f1`.** It was upgraded at some point
+between this document being written and the port being done. Confirmed as the intended source
+before starting. Nothing else about it had moved: the board is still at `(0, 0.6, 2)`, `Islands`
+still has four children and one component, and `ControlListener.islandManager` is still unwired —
+so §9's three unfinished Editor steps were all still outstanding.
+
+**§7's wall table was wrong.** The walls are not four identical cubes with two of them rotated
+90°. They are two shapes, unrotated:
+
+| | Position | Scale |
+| --- | --- | --- |
+| `Wall` | `(0, 0, 1.52)` | `(3.08, 0.04, 0.04)` |
+| `Wall (1)` | `(0, 0, -1.52)` | `(3.08, 0.04, 0.04)` |
+| `Wall (2)` | `(1.52, 0, 0)` | `(0.04, 0.04, 3.08)` |
+| `Wall (3)` | `(-1.52, 0, 0)` | `(0.04, 0.04, 3.08)` |
+
+They are also **triggers with a kinematic `Rigidbody`**, which §7 does not mention and which is
+load-bearing: `LineControls` is an `OnTriggerEnter`, and the trail's own `MeshCollider` is
+non-convex and therefore cannot be the trigger half of the pair.
+
+**§8's `DefaultNetworkPrefabs.asset` step did itself.** Netcode 2.x's prefab post-processor adds
+any imported prefab carrying a `NetworkObject` to the default list, so `Base` and
+`NetworkCannonLine` were already there after the §4 copy and the refresh. Worth knowing, because
+it also means the list changes on any prefab import — and with `ForceSamePrefabs: 1` that is a
+hard connection failure for a headset on an older build.
+
+**§4's list has one file nothing references.** `grass_normal2.jpg` is not used by any material,
+shader graph or prefab in BASH. Copied anyway, for exactness against the plan; safe to delete.
+
+**`Base.prefab`'s root is not identity.** Its local scale is `(1.5, 0.75, 1.5)` and the gamepieces
+under it are authored at `(1, 2, 1)`, so the product is uniform. `SpawnManager` leaves the
+prefab's scale alone and sets only position and rotation — resetting it to one would squash every
+piece.
+
+### Deliberate departures
+
+**`Bash Root` is a child of `Board`, not a sibling** (§5, §7). §7 hangs it beside `Board` under
+`World Root`, but §5 also says to author `Board`'s local scale to match Chasms' footprint — and
+those two contradict: a scaled `Board` beside an unscaled `Bash Root` would leave the water and
+walls one size and the bases and trails another. Under `Board`, one local scale governs the whole
+game. `Board` is currently authored at scale 1, i.e. BASH's true 3 m board (see below).
+
+**A seventh script, `BashRoot.cs`** (§13 says six). The conversion in §5 appears in five methods
+across three files; putting `ToLocalPoint`/`ToWorldPoint`/`ToLocalDirection`/`ToWorldDirection`
+and the `Instance` singleton in one 70-line file is what keeps the §11.5 acceptance test
+debuggable. It also holds `SpawnParent`, the `NetworkObject` handed to `TrySetParent`.
+
+**Spawn first, then `TrySetParent`.** §5 says to parent spawned objects via `TrySetParent`, and
+that is what happens — but the objects are instantiated **unparented**, given their board-local
+transform, spawned, and only then reparented with `worldPositionStays: false`. Parenting before
+the spawn also works in Netcode 2.x, but only the post-spawn call is the documented path, and it
+carries the local transform in its own `ParentSyncMessage`. A `PlaceBaseClientRpc` re-asserts the
+local transform on clients afterwards, which is belt and braces and costs one small RPC per base
+per session.
+
+**`ControlListener.Action` is gone entirely**, not just its `"menu"` branch. With the menu branch
+deleted the state machine had one state, so the guard is `netBaseControl != null` plus the
+`PlateauSelection`-style `Playable()` check. `NetworkBaseControl` no longer sets
+`controls.Action = "playing bash"`; it calls `ConnectBaseToControls` and nothing else.
+
+**Board scale left at 1** (§5's "board size and the player ring"). Chasms' board measures roughly
+4 m across at `contentScale = 1`, so players on the 2 m `PlayerRing` already stand at its edge;
+sizing BASH's 3 m board to match would put its walls under their hands. The 3 m board keeps the
+half-metre margin BASH was designed for, at the cost of the table changing apparent size on a
+Chasms ↔ BASH switch until somebody re-grabs it. One number on `Board` if that turns out to be
+the wrong trade.
+
+**The §6 "optional but recommended" per-scene key filter was taken.** `MenuControl.KeyScene` plus
+`ApplySceneKeyFilter`, applied to the menu instance as it opens.
+
+### Small fixes made in passing
+
+- **`EndCannonLine` could throw.** A trail entering the corner where two walls meet raises two
+  `OnTriggerEnter` calls in one frame, and the second indexed an empty point list. Guarded.
+- **A dead piece could be re-selected.** `pointerControl` gets no `OnTriggerExit` when its target
+  is switched off under it, so `currentGamepiece` went stale; `ChangeGamePiece` now ignores a
+  piece that is not `activeInHierarchy`.
+- **`LineControls` dereferenced `myNetBaseControl.activeGamepiece` unguarded** on an island or
+  obstacle hit. Both paths go through `ActivePieceIndex()` now.
+- **Bases and trails are spawned `destroyWithScene: true`.** Netcode's default is `false`, which
+  is what carries the players and `Room Anchor` across a `LoadSceneMode.Single` switch — and
+  would have carried BASH's bases into Chasms with them. Not a bug in BASH, which had one scene;
+  a new one the moment it became a third game. This is §11.9's "nothing leaks".
+- Unused `using NUnit.Framework;` and `using Unity.VisualScripting;` removed from the copied files.
+
+### Still outstanding
+
+- **Nothing in §11 has been run.** The port compiles clean with no warnings and the scene loads in
+  Play mode with no exceptions, and that is the whole of what has been verified. Steps 2-9 need a
+  running room; step 10 needs two headsets.
+- **Menu key placement is a first pass.** `Reset Game` and `Random Islands` sit side by side at
+  `z = -0.431` on `Row1`, narrower than the other keys (`x` scale `0.55`, font 7) so both fit on
+  one row — two more full-width rows would have pushed `Menu1`'s `Voice Chat` key off the bottom
+  of the panel. Judge it by eye and move them.
+- **The island layout is BASH's, transplanted.** Same four positions, scales and yaws. Judge by
+  eye; `Random Islands` overwrites it anyway.
+- **`keepPointerAlwaysOn` is never switched back off** when leaving BASH for Stairs or the lobby.
+  That is the pre-existing behaviour Chasms already has, not something this port introduced, but
+  BASH is now a second way to reach it.
+- **`rightJoystick.x` steers the cannon**, and `CLAUDE.md` says that axis should stay unused
+  because its Editor keyboard fallback is bound to `A`/`D` and `A` is `BoardAnchor.RequestReAlign`.
+  On a headset there is no conflict. In the Editor, steer with the **left/right arrow keys**,
+  which drive the same axis and collide with nothing.

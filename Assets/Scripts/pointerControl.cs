@@ -7,6 +7,12 @@ public class pointerControl : MonoBehaviour
     public string currentLetter = "";
     public keyInfo currentKey;
 
+    // BASH's gamepieces, which are triggers with a Rigidbody. They cannot go through PointerBeam
+    // instead: that raycast uses QueryTriggerInteraction.Ignore, and relaxing it would make the
+    // beam hit its own capsule and both grabber volumes. One target with no distance sorting, as
+    // for keys — fine for four well-separated pieces per base, fiddly at the smallest board scale.
+    public GameObject currentGamepiece;
+
     // Start is called before the first frame update
     void Start()
     {
@@ -33,6 +39,11 @@ public class pointerControl : MonoBehaviour
             this.transform.GetChild(0).localScale = newScale;
             this.transform.GetChild(0).localPosition = new Vector3(0, -1+(distance / currentSize), 0);
             this.transform.GetChild(0).GetChild(0).gameObject.SetActive(true);
+        }
+        else if (col.gameObject.tag == "gamepiece")
+        {
+            col.transform.GetChild(1).gameObject.SetActive(true);   // hover ring
+            currentGamepiece = col.gameObject;
         }
     }
 
@@ -66,6 +77,11 @@ public class pointerControl : MonoBehaviour
             this.transform.GetChild(0).localScale = new Vector3(1, 1, 1);
             this.transform.GetChild(0).localPosition = new Vector3(0, 0, 0);
             this.transform.GetChild(0).GetChild(0).gameObject.SetActive(false);
+        }
+        else if (col.gameObject.tag == "gamepiece")
+        {
+            col.transform.GetChild(1).gameObject.SetActive(false);  // hover ring
+            currentGamepiece = null;
         }
     }
 }

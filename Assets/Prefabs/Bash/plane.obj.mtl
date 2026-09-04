@@ -1,0 +1,33 @@
+
+newmtl Standard_B29E43
+Kd  0.6980392 0.6196079 0.2627451
+Ks  0 0 0
+Ka  0 0 0
+d  1
+Ns  0
+illum 2
+
+
+
+
+newmtl Standard_000000
+Kd  0 0 0
+Ks  0 0 0
+Ka  0 0 0
+d  1
+Ns  0
+illum 2
+
+
+
+
+newmtl Standard_7FACA2
+Kd  0.4980392 0.6745098 0.6352941
+Ks  0 0 0
+Ka  0 0 0
+d  1
+Ns  0
+illum 2
+
+
+

@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using Unity.Netcode;
 using UnityEngine;
 using UnityEngine.SceneManagement;
@@ -38,6 +39,21 @@ public class MenuControl : MonoBehaviour
 
     // Matches the keyName on the key in Menu1.prefab exactly, space included.
     private const string VoiceKey = "Voice Chat";
+
+    /// <summary>
+    /// Keys that only mean something in one scene, so that Menu1/Menu2 can stay a single pair of
+    /// prefabs shared by every game. Anything not listed here shows everywhere, which is the case
+    /// for all five of the original keys — a game switch and Place Anchor are always meaningful.
+    ///
+    /// Without this, BASH's Reset Game and Random Islands would sit in the lobby, Stairs and
+    /// Chasms doing nothing, which CLAUDE.md already flags as a wart in the mirror-image case
+    /// (Passthrough: a live handler with no key).
+    /// </summary>
+    static readonly Dictionary<string, string> KeyScene = new Dictionary<string, string>
+    {
+        { "Reset Game",     GameRoutes.BashSceneName },
+        { "Random Islands", GameRoutes.BashSceneName },
+    };
 
     private pointerControl currentPointer;
     private GameObject currentMenu;
@@ -185,9 +201,46 @@ public class MenuControl : MonoBehaviour
 
             case "Stairs":
             case "Chasms":
+            case "BASH":
                 RequestGame(keyName);
                 CloseMenu();
                 break;
+
+            case "Reset Game":
+            {
+                // BASH's own BASHMenu is gone; these two keys are the shared menu's now. They
+                // resolve their target in the active scene and log-and-no-op when there is not
+                // one, the same way Place Anchor handles a missing BoardAnchor. Outside BASH the
+                // scene filter in OpenMenu1 hides them, so this is the belt to that's braces.
+                ControlListener bash = FindFirstObjectByType<ControlListener>();
+                if (bash != null)
+                {
+                    bash.ResetBoard();
+                }
+                else
+                {
+                    Debug.Log("MenuControl: 'Reset Game' pressed, but there is no BASH board " +
+                              "in this scene.");
+                }
+                CloseMenu();
+                break;
+            }
+
+            case "Random Islands":
+            {
+                IslandManager islands = FindFirstObjectByType<IslandManager>();
+                if (islands != null)
+                {
+                    islands.RandomizeIslands();
+                }
+                else
+                {
+                    Debug.Log("MenuControl: 'Random Islands' pressed, but there is no BASH board " +
+                              "in this scene.");
+                }
+                CloseMenu();
+                break;
+            }
 
             case "Place Anchor":
                 // Puts the room's shared spatial anchor at the placer's feet and shares it, which
@@ -259,6 +312,7 @@ public class MenuControl : MonoBehaviour
         currentMenu.transform.rotation = myCam.rotation;
         currentMenu.transform.position += -menuLeftOffset * currentMenu.transform.right;
 
+        ApplySceneKeyFilter();
         ShowVoiceState();
 
         if (worldRoot != null)
@@ -342,6 +396,28 @@ public class MenuControl : MonoBehaviour
         }
 
         RoomAnchor.Instance.SetVoiceEnabledServerRpc(!RoomAnchor.Instance.voiceEnabled.Value);
+    }
+
+    /// <summary>
+    /// Hide the keys that belong to a game the room is not currently in. Done on the instantiated
+    /// menu rather than in the prefabs, so a game's keys cost one row in <see cref="KeyScene"/>
+    /// rather than a third menu prefab to keep in step with the other two.
+    /// </summary>
+    private void ApplySceneKeyFilter()
+    {
+        if (currentMenu == null)
+        {
+            return;
+        }
+
+        string scene = SceneManager.GetActiveScene().name;
+        keyInfo[] keys = currentMenu.GetComponentsInChildren<keyInfo>(true);
+
+        for (int i = 0; i < keys.Length; i++)
+        {
+            bool applies = !KeyScene.TryGetValue(keys[i].keyName, out string only) || only == scene;
+            keys[i].gameObject.SetActive(applies);
+        }
     }
 
     /// <summary>

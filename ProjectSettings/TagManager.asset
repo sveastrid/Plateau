@@ -6,6 +6,11 @@ TagManager:
   tags:
   - key
   - Grabbable
+  - gamepiece
+  - obstacle
+  - island
+  - base
+  - line
   layers:
   - Default
   - TransparentFX

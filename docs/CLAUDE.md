@@ -81,9 +81,10 @@ have to agree; changing one means changing the other.
   assemblies, no `Tests/` folders, and **no `.asmdef` anywhere** — every runtime script compiles
   into the default `Assembly-CSharp`. Adding tests means creating assembly definitions first.
 - **Build scene order** (`ProjectSettings/EditorBuildSettings.asset`) is
-  `OpeningScene` (0) → `StairsGame` (1) → `ChasmGame` (2) → `GameScene` (3). Every scene a room
-  can switch into must be in this list; `LoadScene` fails with `InvalidSceneName` otherwise, and
-  that failure is only visible as a `Debug.LogError` from `GameSelector`.
+  `OpeningScene` (0) → `StairsGame` (1) → `ChasmGame` (2) → `GameScene` (3) → `BashGame` (4).
+  Every scene a room can switch into must be in this list; `LoadScene` fails with
+  `InvalidSceneName` otherwise, and that failure is only visible as a `Debug.LogError` from
+  `GameSelector`.
 - **Testing without a headset works.** `InputReader` falls back to the keyboard per-hand whenever
   that hand's XR controller is absent, so the whole app is playable in the Editor:
 
@@ -133,6 +134,7 @@ Practical consequences:
 | `OpeningScene` | Lobby. VR keyboard, room code + username entry, hosts or joins. Holds the **Network Manager** and the one **`PersistentRig`** instance — see [The persistent rig](#the-persistent-rig). |
 | `StairsGame` | Default game. `World Root > Board > Cube` — a placeholder. No rig of its own. |
 | `ChasmGame` | The Plateau board: 41 `Plateau` instances and 81 `Bridge Spots` instances under `World Root > Board`, plus the piece system — see [The Plateau game](#the-plateau-game). No rig of its own. |
+| `BashGame` | BASH: a 3 m square of water inside four walls, four islands, and a base per player. See [The BASH game](#the-bash-game). No rig of its own. |
 | `GameScene` | **Legacy.** In the build list, but absent from `GameRoutes`, so nothing can reach it. Predates the `RoomContent`/`WorldGrab` split. No rig of its own, same as every other game scene. |
 
 A game scene's hierarchy, and the shape any new game should copy — deliberately thin, now that
@@ -601,6 +603,96 @@ offset and rotated 180°, so **the `Plateau` root's position is not the plateau'
 centre, radius and surface height comes from `Renderer.localBounds`, and every lookup off a raycast
 hit is `GetComponentInParent`.
 
+## The BASH game
+
+Ported from `D:\Unity_Stuff\BASH_U6`; the plan and its corrections are
+[`BASHUpdate.md`](BASHUpdate.md). All of it lives in `Assets/Scripts/Bash/`, another `.asmdef`-less
+subfolder that compiles into `Assembly-CSharp`.
+
+Four players sit around a 3 m square of water. Each owns a **base** carrying four gamepieces —
+boat (0), plane (1), sub (2), helicopter (3). Point at one of yours with the right trigger to
+select it, **hold the left trigger** to fire a growing tube of geometry steered by the right
+joystick, release, and the piece teleports to the end of the trail. The trail is a live collider
+while it is drawn, and what it touches decides what happens:
+
+| Tag hit | Effect |
+| --- | --- |
+| `gamepiece` | that piece is destroyed — this is how you kill people |
+| `obstacle` | walls and base pads: the shot ends there and **your** piece dies |
+| `island` | boats and subs die; planes and helicopters fly over |
+
+Not turn-based, and no win condition: any player may fire at any time. That is how BASH already
+was and the port did not change it.
+
+### `Bash Root` is the content frame
+
+**Every networked BASH value is in `World Root > Board > Bash Root`'s local space**, and every
+conversion goes through the four helpers on `BashRoot` so there is one place to look when a shot
+comes out of the wrong end of a cannon. This is the whole of the port's engineering: BASH was
+written for a world that never moved, with its board at world `(0, 0.6, 2)` and plain world-space
+`Vector3`s on the wire, and in this project `World Root` moves, turns and rescales continuously
+under the two-grip world grab.
+
+- Bases and trails are **spawned unparented, then `NetworkObject.TrySetParent(BashRoot.SpawnParent,
+  worldPositionStays: false)`** on the server, so Netcode replicates the parenting and every
+  client's objects inherit `World Root`'s pose and scale for free. The local transform is set
+  before the reparent, which is what makes those exact numbers survive it.
+- `NetworkBaseControl.activePos`/`activeRot` are board-local, converted back on the way out.
+- `PipeRenderer` treats its point list as **mesh vertices in the pipe object's own local space**,
+  which is why the line objects sit on `Bash Root` at an identity local transform and the points
+  are fed in already converted.
+- The cannon-speed constants are therefore **board-local units per second**, so a shot crosses the
+  same fraction of the board however big the players have made it. That falls out; it is not
+  extra work.
+
+The acceptance test for all of it is §11.5 of `BASHUpdate.md`: grab the board with both grips,
+move / turn / resize it, then fire. The trail must come out of the cannon and stay on the board.
+
+`Board` is authored at local scale 1 — a true 3 m board, so players on the 2 m `PlayerRing` stand
+half a metre clear of the walls. `Bash Root` is a **child** of `Board` rather than a sibling
+(which is where `BASHUpdate.md` §7 put it), so that scale is the one knob that resizes water,
+walls, islands, bases and trails together. Chasms' board is nearer 4 m across, and
+`RoomAnchor.contentPos/Yaw/Scale` survives a `LoadSceneMode.Single` switch, so switching between
+the two games leaves the table looking a size different until somebody re-grabs it. Changing that
+is a one-number edit on `Board`.
+
+### Seats
+
+`PlayerControls.spawnSlot` — the only stable per-player index in the project, and already the
+colour index for Chasms. **Seats 0-3 get a base; 4-11 spectate**, and `ControlListener` tolerates
+a null `netBaseControl` throughout because of it.
+
+BASH's own `NetworkManager.ConnectedClients.Count` scheme is gone: it handed two players the same
+base whenever somebody left and somebody else joined. `SpawnManager` **polls at 4 Hz** rather than
+hooking `OnClientConnectedCallback`, for the identical reason `PlateauGame` does — `spawnSlot` is
+assigned inside `PlayerControls.OnNetworkSpawn`, which can run later. A seat that already has a
+base and a new occupant gets `ChangeOwnership`, so a reconnecting player is handed the base they
+left rather than a second one; `NetworkBaseControl.OnGainedOwnership` re-wires it to their
+`Controls`.
+
+### Interaction
+
+`ControlListener` is `[DefaultExecutionOrder(25)]`, matching `PlateauSelection` — after
+`RoomContent` (15) and `WorldGrab` (20) — and stands down on exactly the same conditions: menu
+open, `WorldGrab.IsActive`, **or either grip merely held**. A shot in progress when any of those
+goes true is dropped, not committed.
+
+Piece selection goes through **`pointerControl`, not `PointerBeam`**: BASH's gamepiece colliders
+are triggers, and `PointerBeam` raycasts with `QueryTriggerInteraction.Ignore`, so it would never
+see them — and relaxing that would make the beam hit its own capsule and both grabber volumes.
+`ControlListener.Bind()` opts the scene into `MenuControl.SetKeepPointerAlwaysOn(true)`, the same
+way `PlateauSpawnMenu.Bind()` does for Chasms.
+
+### Known rough edges, inherited
+
+- `SpawnNetworkCannonLineServerRpc` sends an **unbounded `Vector3[]`**. A long shot is several
+  hundred points; a bigger board makes longer shots. If shots stop replicating, cap or simplify
+  the polyline before sending.
+- **Trails are never despawned except by `Reset Game`**, and each shot leaves both a local preview
+  and a replicated `NetworkObject`. Over a long game that grows without bound.
+- Spectator seats are **untested** — the null-tolerance is written but nobody has had a fifth
+  player in the room.
+
 ## Avatar replication
 
 `Player.prefab` (the `NetworkManager`'s player prefab, auto-spawned per client) carries
@@ -641,18 +733,20 @@ Keys are dispatched by **`keyInfo.keyName` string**, never by child index. (The 
 resolved widgets with `GetChild(0).GetChild(9).GetChild(13)`, so re-skinning the prefab broke it
 with no compile error.) `pointerControl` reports `keyName`, not the visible label.
 
-`Menu1.prefab` holds five keys — **`Stairs`**, **`Chasms`**, **`BASH`**, **`Place Anchor`**,
-**`Voice Chat`** — and `Menu2.prefab` holds the same four minus `Voice Chat`, which is host-only
-(see `OpenMenu1`).
+`Menu1.prefab` holds seven keys — **`Stairs`**, **`Chasms`**, **`BASH`**, **`Place Anchor`**,
+**`Reset Game`**, **`Random Islands`**, **`Voice Chat`** — and `Menu2.prefab` holds the same six
+minus `Voice Chat`, which is host-only (see `OpenMenu1`).
 
-Two of those are currently one-sided, in opposite directions:
+**Not every key shows in every scene.** `MenuControl.KeyScene` names the keys that belong to one
+game, and `ApplySceneKeyFilter` deactivates the rest on the menu instance as it is opened — which
+is why a game's keys cost one row in that dictionary rather than a third menu prefab to keep in
+step with the other two. Today only BASH's `Reset Game` and `Random Islands` are scoped; the five
+original keys are meaningful everywhere. The `HandleKey` cases still log-and-no-op when their
+target is missing, so the filter is a tidiness measure, not the guard.
 
-- **`BASH`** exists as a key in both prefabs but has no `case` in `HandleKey` and no row in
-  `GameRoutes`, so it falls through to the `default` case and logs *"no game is wired to that key
-  yet"*. Wiring it up is [`BASHUpdate.md`](BASHUpdate.md).
-- **`Passthrough`** is the mirror image: `HandleKey` handles it, but no such key exists in either
-  prefab (the Editor command that added it, `AddPassthroughMenuKey.cs`, was deleted) — the handler
-  is live and unreachable.
+One key is still one-sided: **`Passthrough`**. `HandleKey` handles it, but no such key exists in
+either prefab (the Editor command that added it, `AddPassthroughMenuKey.cs`, was deleted) — the
+handler is live and unreachable.
 
 An unknown key is deliberately inert and logs.
 
@@ -806,7 +900,10 @@ Now a rename logs one.
 whole board, and the numbers are on the wire. Adding one at the end is safe.
 
 **Tags**: `key` (pointer targets) and `Grabbable` (grabber volumes). `GrabControl` also walks
-parents **by name** until it hits `Right Grabber`/`Left Grabber`.
+parents **by name** until it hits `Right Grabber`/`Left Grabber`. BASH adds five more —
+`gamepiece`, `obstacle`, `island`, `base`, `line` — and every one of them is matched as a string
+in `LineControls`, `ControlListener.ResetBoard`, `NetworkBaseControl.DeleteAllLinesServerRpc` and
+`pointerControl`. A missing tag there fails silently: nothing collides, nothing resets.
 
 **Serialized-field renames drop every scene's value silently.** `CameraController2.LeftHand` used
 to be `RightHand`; `PersistentRig.prefab` (built from `StairsGame`'s old copy) still has that dead
@@ -853,7 +950,7 @@ are marked applied, corrected, or out of scope — check the code before trustin
 | File | Covers |
 | --- | --- |
 | [`plateauRules.md`](plateauRules.md) | The game's rules. Starting forces and movement are implemented; everything else is still the design target. It says 33 plateaus and the scene has 41 — the code counts children, so the doc is the stale one. |
-| [`BASHUpdate.md`](BASHUpdate.md) | **Not yet implemented.** The plan for porting BASH (`D:\Unity_Stuff\BASH_U6`) in as a third game: the GUID collisions a bulk copy would cause, the world-space → `World Root` local conversion its networking needs, and the scene to build. |
+| [`BASHUpdate.md`](BASHUpdate.md) | **Applied.** The plan for porting BASH (`D:\Unity_Stuff\BASH_U6`) in as a third game: the GUID collisions a bulk copy would cause, the world-space → `World Root` local conversion its networking needs, and the scene to build. Its §14 records where the port ended up different from the plan. |
 | [`anchoringUpdate.md`](anchoringUpdate.md) | One anchor per room, the `World Root` content frame, the two-grip world grab. |
 | [`fixAnchoring.md`](fixAnchoring.md) | Colocated alignment, the nametag and hand-cone defects, the two-cones-and-a-name avatar. |
 | [`updates1.md`](updates1.md) | Earlier pass — root causes and ordering. |

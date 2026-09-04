@@ -20,10 +20,19 @@ public static class GameRoutes
     public const string PlateauGameKey = "Chasms";
     public const string PlateauSceneName = "ChasmGame";
 
+    /// <summary>
+    /// BASH — four bases, four gamepieces each, and a trail of geometry you steer into people.
+    /// Named here for the same reason Chasms is: so MenuControl's key and the scene name cannot
+    /// drift apart from the row below.
+    /// </summary>
+    public const string BashGameKey = "BASH";
+    public const string BashSceneName = "BashGame";
+
     static readonly Dictionary<string, string> SceneByKey = new Dictionary<string, string>
     {
         { "Stairs", "StairsGame" },
         { PlateauGameKey, PlateauSceneName },
+        { BashGameKey, BashSceneName },
     };
 
     public static string DefaultScene => SceneByKey[DefaultGameKey];
