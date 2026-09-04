@@ -102,6 +102,11 @@ have to agree; changing one means changing the other.
   anchor itself — world grab, shared board placement, the ring, avatars — still runs.
 - Anything multiplayer needs two running clients. Anything colocation needs two real headsets in
   one room.
+- `.gitattributes` routes `.unity`/`.prefab`/`.asset` through Unity's smart merge
+  (`merge=unityyamlmerge`). The driver itself is registered per machine in `.git/config`
+  (`[merge "unityyamlmerge"]`, pointing at the local Editor install) — **not** committed, since the
+  path is machine-specific. Re-register it after a fresh clone if merges on those files start
+  failing outright instead of resolving.
 
 ## Repo state — read this before trusting `git`
 
@@ -125,37 +130,46 @@ Practical consequences:
 
 | Scene | Role |
 | --- | --- |
-| `OpeningScene` | Lobby. VR keyboard, room code + username entry, hosts or joins. Holds the **Network Manager**. |
-| `StairsGame` | Default game. `World Root > Board > Cube` — a placeholder. |
-| `ChasmGame` | The Plateau board: 41 `Plateau` instances and 81 `Bridge Spots` instances under `World Root > Board`, plus the piece system — see [The Plateau game](#the-plateau-game). |
-| `GameScene` | **Legacy.** In the build list, but absent from `GameRoutes`, so nothing can reach it. Predates the `RoomContent`/`WorldGrab` split. |
+| `OpeningScene` | Lobby. VR keyboard, room code + username entry, hosts or joins. Holds the **Network Manager** and the one **`PersistentRig`** instance — see [The persistent rig](#the-persistent-rig). |
+| `StairsGame` | Default game. `World Root > Board > Cube` — a placeholder. No rig of its own. |
+| `ChasmGame` | The Plateau board: 41 `Plateau` instances and 81 `Bridge Spots` instances under `World Root > Board`, plus the piece system — see [The Plateau game](#the-plateau-game). No rig of its own. |
+| `GameScene` | **Legacy.** In the build list, but absent from `GameRoutes`, so nothing can reach it. Predates the `RoomContent`/`WorldGrab` split. No rig of its own, same as every other game scene. |
 
-A game scene's hierarchy, and the shape any new game should copy:
+A game scene's hierarchy, and the shape any new game should copy — deliberately thin, now that
+the rig lives elsewhere:
 
 ```
 World Root            [RoomContent]        <- everything the game owns hangs here
   Board
     ...
-Input Reader          [InputReader]
-Menu Manager          [MenuControl]
                                            <- ChasmGame additionally has, under World Root:
                                               Pieces        (empty, identity, SCALE 1)
                                               Plateau Game  [PlateauBoard, PlateauPieceView]
                                               and at the scene root:
-                                              Plateau Controller [PlateauSelection]
-XRRig                 [XROrigin, CameraController2, OVRManager,
-                       OVRPassthroughLayer, PassthroughController,
-                       WorldGrab, ColocationProbe(disabled)]
-  Camera Offset
-    Main Camera
-    Left Hand         [TrackedPoseDriver, LHController]
-    Right Hand        [TrackedPoseDriver, RHController]
-      InfoBlock       [VisibleWhenLooking]   <- shows the room code when looked at
-  Debugger            [DebugLog]
-Directional Light
+                                              Plateau Controller [PlateauSelection, PlateauSpawnMenu]
 ```
 
-`XROrigin.m_TrackingOriginMode` is **2 (Floor)** in every scene. The rig's `y` is the real floor,
+`Input Reader`, `Menu Manager`, `XRRig` and `Directional Light` are **not** part of this — they
+live once, in `OpeningScene`, under `PersistentRig`:
+
+```
+PersistentRig          [PersistentObject]   <- DontDestroyOnLoad; lives only in OpeningScene
+  Directional Light
+  XRRig                 [XROrigin, CameraController2, OVRManager,
+                         OVRPassthroughLayer, PassthroughController,
+                         WorldGrab, ColocationProbe(disabled)]
+    Camera Offset
+      Main Camera
+      Left Hand         [TrackedPoseDriver, LHController]
+        SpawnMenu                              <- Chasms-only; see The persistent rig
+      Right Hand        [TrackedPoseDriver, RHController]
+        InfoBlock       [VisibleWhenLooking]   <- shows the room code when looked at
+    Debugger            [DebugLog]
+  Input Reader           [InputReader]
+  Menu Manager           [MenuControl]
+```
+
+`XROrigin.m_TrackingOriginMode` is **2 (Floor)** on the shared rig. The rig's `y` is the real floor,
 which the rest of the code assumes everywhere — `PlayerControls` projects the head straight down
 onto it, `PlayerRing` puts every slot at `y = 0`, and `CameraController2` compares the anchor's
 height against it.
@@ -191,18 +205,85 @@ the key against `GameRoutes` (**never** hand a client string to `LoadScene`) →
 on, so every client follows and spawned `NetworkObject`s are carried across. **Clients must never
 call `UnityEngine.SceneManagement.SceneManager.LoadScene` while a session is running.**
 
-`LoadSceneMode.Single` destroys the rig, the camera, the hands, the Input Reader and the Menu
-Manager on every switch. Three components rebind around this and every new component that caches a
-scene object must do the same:
+`LoadSceneMode.Single` destroys everything in the outgoing scene that is not itself
+`DontDestroyOnLoad` — which, now that `PersistentRig` exists, no longer includes the rig, the
+camera, the hands, the Input Reader or the Menu Manager. See
+[The persistent rig](#the-persistent-rig). Components still rebind around a switch, and every new
+component that caches a scene object should follow the same pattern, even though the object being
+re-found is now usually the very same instance as before:
 
-- `PlayerControls.BindToScene()` on `SceneManager.activeSceneChanged`
-- `BoardAnchor.HandleActiveSceneChanged()` clears its cached rig and Input Reader
+- `PlayerControls.BindToScene()` on `SceneManager.activeSceneChanged` — the `Player` prefab is not
+  part of `PersistentRig` (see Surviving objects, below), so this still has real work to do.
+- `BoardAnchor.HandleActiveSceneChanged()` clears its cached rig and Input Reader references and
+  re-`Find`s them next frame. Now a harmless no-op — same objects, never destroyed — kept so a
+  future scene that does not source its rig from `PersistentRig` still degrades safely.
 - `CameraController2.AdoptLocalPlayerSlot()` in `Start()`, for the case where the rig comes up
-  after the player object
+  after the player object.
 
 Surviving objects: the Network Manager (and `BoardAnchor` with it), the `Player` prefabs, the
-`Room Anchor` object, and the `GameObject` holding the bound `OVRSpatialAnchor`
-(`DontDestroyOnLoad`, so it is not re-downloaded and re-localized on every switch).
+`Room Anchor` object, the `GameObject` holding the bound `OVRSpatialAnchor` (`DontDestroyOnLoad`,
+so it is not re-downloaded and re-localized on every switch) — and now also **`PersistentRig`**:
+the rig, camera, hands, Input Reader and Menu Manager, one instance for the life of the app.
+
+## The persistent rig
+
+`Assets/Prefabs/PersistentRig.prefab` — `Directional Light`, `XRRig` (with `Camera Offset`, the
+hands, `SpawnMenu`), `Input Reader` and `Menu Manager` all under one root carrying
+`PersistentObject`, which self-`DontDestroyOnLoad`s in `Awake`. One instance lives in
+`OpeningScene`; no other scene has its own copy of any of it. Before this existed, each game scene
+baked its own full copy and `LoadSceneMode.Single` destroyed and rebuilt all of them on every
+switch — see [Switching games](#switching-games) for what still runs on that switch and why.
+
+**Resting position.** The prefab's own root transform is `(0, 0, -10)`, matching what
+`OpeningScene`'s and `GameScene`'s original local rigs were both hand-placed at (facing the
+keyboard / the menu, respectively). `CameraController2.PlaceAtRingSlot` repositions the rig at
+runtime for actual game scenes (`GameRoutes.IsGameScene` — currently `StairsGame` and `ChasmGame`),
+so the baked default only matters for the two scenes that never call it. Do not "fix" this position
+to somewhere sensible for a game scene — that breaks the lobby instead.
+
+**`gameObject.scene` is the fixed pseudo-scene `"DontDestroyOnLoad"` on every persisted object,
+forever.** Anything that used to read `gameObject.scene.name` to tell a game scene from the lobby
+(only `CameraController2.PlaceAtRingSlot` did) has to read `SceneManager.GetActiveScene().name`
+instead.
+
+**ChasmGame-specific exceptions**, because the shared prefab's authored defaults came from
+`StairsGame`:
+
+- `SpawnMenu` (the left-hand piece-buying menu) lives under the shared `Left Hand` even though only
+  `PlateauSpawnMenu` (ChasmGame-only) ever opens it — it has to live somewhere every scene shares,
+  and nothing in another scene references it, so its presence there is harmless.
+- `MenuControl.keepPointerAlwaysOn` is `false` on the shared instance (`StairsGame`'s authored
+  value — "the lobby and StairsGame keep the menu-only behaviour they were authored with").
+  `PlateauSpawnMenu.Bind()` opts ChasmGame in through `MenuControl.SetKeepPointerAlwaysOn(true)`
+  the moment it resolves `menu`, rather than changing the shared default and taking the other
+  scenes down with it.
+
+**The pointer's active state does not survive a scene switch on its own any more.**
+`MenuControl.OpenMenu1`/`CloseMenu` toggle it, and `MenuControl.ApplyPointerDefault` resets it to
+the incoming scene's default rather than trusting whatever the previous scene left behind. That
+reset hangs off **`SceneManager.activeSceneChanged`, not `Start()`** — `Menu Manager` is part of
+`PersistentRig` and therefore `DontDestroyOnLoad`, so its `Start()` runs exactly once for the life
+of the app, in `OpeningScene`, and could never reset anything for a game scene.
+
+Two consequences that have already caused bugs:
+
+- **`OpeningScene` does have a `MenuControl`** — it arrives with `PersistentRig`. `GameController`
+  is not the only thing writing the pointer's state there, so the two have to *agree* rather than
+  one winning: `GameController.Start()` switches the pointer on for the keyboard, and
+  `ApplyPointerDefault` returns `keepPointerAlwaysOn || !GameRoutes.IsGameScene(...)`, which is
+  true in the lobby. Unity gives no ordering guarantee between two `Start()` calls, and when these
+  two disagreed the pointer came up dead and no key on the lobby keyboard could be pressed.
+- **Never assign `keepPointerAlwaysOn` directly; call `SetKeepPointerAlwaysOn`.** The
+  `activeSceneChanged` reset has already run and switched the pointer off by the time any scene
+  component's first `Update` opts in, so a bare field write leaves the pointer dead until the
+  player opens and closes the menu. The setter applies the flag and re-evaluates in one call.
+  `PlateauSelection` reads the flag and does not write it.
+
+**`GameController` is the one place with direct, non-`Find` serialized references into the rig**
+(`inputs`, `rh`, `lh`, `pointer`) rather than the `Find`-by-name convention everything else here
+uses. That is a liability, not a model to copy: a rename anywhere in `PersistentRig` breaks
+`GameController` at the Inspector level with no runtime fallback, unlike every `Bind()`-style
+component under [Conventions that break silently](#conventions-that-break-silently).
 
 ## Colocation — one anchor, every headset in the same real room
 
@@ -234,7 +315,8 @@ locomotion, snap-turn, recentring and the debug tilt all early-out (`CameraContr
 and `ApplyRingAnchor` refuses to move the rig. A colocated player's position is a fact about the
 real room, not something to assign; involuntary rig moves in passthrough are nauseating. The flag
 is `static` because everything that cares — `PlayerControls`, `WorldGrab`, the probe — needs it
-without holding a reference to a rig that is destroyed on every game switch.
+without holding a reference to the rig at all; it predates `PersistentRig` and the reasoning still
+holds even though the rig itself no longer gets destroyed on a game switch.
 
 **Failure is survivable and honest.** A client that never binds still plays; it is simply a player
 in a different room. It keeps locomotion and the recentre button, and it still gets a ring slot.
@@ -300,7 +382,12 @@ tick rate. Details that matter:
   one sender are reliable-sequenced, so the server applies it before clearing the lock.
 - `Cancel()` releases on `claimSent`, **not** on `LocalHoldsWorld`, so letting go mid-round-trip
   cannot leave the server granting a lock nobody is using.
-- `OnDisable` cancels, because a game switch destroys the rig mid-gesture.
+- `OnDisable` cancels. This existed because a game switch used to destroy the rig mid-gesture;
+  since `PersistentRig` the rig is never destroyed or disabled by a switch, so **this path no
+  longer fires on a game switch** — only on the component's own actual disable/destroy (e.g. Play
+  mode stopping). A lock held into a `LoadSceneMode.Single` switch is not released by this any
+  more. Not yet hit in practice — the server-side release below is the remaining safety net — but
+  worth an explicit release on scene switch if it turns out to matter.
 - The server clears the lock on `OnClientDisconnectCallback`.
 
 ## Where players stand — `PlayerRing`
@@ -479,7 +566,9 @@ not). Board targeting is a separate raycast in **`PointerBeam`**, on the same ob
 - `PointerBeam` writes the beam length **absolutely** every frame, which also masks
   `pointerControl.OnTriggerStay`'s compounding beam maths.
 - The pointer is normally switched on only while the menu is open. `MenuControl.keepPointerAlwaysOn`
-  (ticked in ChasmGame only, default off everywhere else) leaves it on during play.
+  leaves it on during play — `false` on the shared `Menu Manager` instance, opted into by
+  `PlateauSpawnMenu.Bind()` via `MenuControl.SetKeepPointerAlwaysOn(true)` (ChasmGame-only). See
+  [The persistent rig](#the-persistent-rig).
 
 ### Highlighting — `MaterialPropertyBlock`, not `keyInfo`'s material swap
 
@@ -542,7 +631,8 @@ hit is `GetComponentInParent`.
 
 ## Menus, pointer, keys
 
-`MenuControl` (on `Menu Manager`, one per game scene). **`X` opens and closes** the menu, which is
+`MenuControl` (on `Menu Manager`, one shared instance on `PersistentRig` — see
+[The persistent rig](#the-persistent-rig)). **`X` opens and closes** the menu, which is
 instantiated 1.3 m in front of the camera and 0.7 m to the left. The laser pointer plus the right
 trigger picks a key: pressed on trigger **down**, acted on trigger **up**, so sliding off a key
 cancels it.
@@ -551,15 +641,26 @@ Keys are dispatched by **`keyInfo.keyName` string**, never by child index. (The 
 resolved widgets with `GetChild(0).GetChild(9).GetChild(13)`, so re-skinning the prefab broke it
 with no compile error.) `pointerControl` reports `keyName`, not the visible label.
 
-`Menu1.prefab` currently holds three keys: **`Stairs`**, **`Chasms`**, **`Place Anchor`**.
-`MenuControl.HandleKey` also handles **`Passthrough`**, but no such key exists in the prefab today
-(the Editor command that added it, `AddPassthroughMenuKey.cs`, was deleted) — the handler is live
-and unreachable. An unknown key is deliberately inert and logs.
+`Menu1.prefab` holds five keys — **`Stairs`**, **`Chasms`**, **`BASH`**, **`Place Anchor`**,
+**`Voice Chat`** — and `Menu2.prefab` holds the same four minus `Voice Chat`, which is host-only
+(see `OpenMenu1`).
+
+Two of those are currently one-sided, in opposite directions:
+
+- **`BASH`** exists as a key in both prefabs but has no `case` in `HandleKey` and no row in
+  `GameRoutes`, so it falls through to the `default` case and logs *"no game is wired to that key
+  yet"*. Wiring it up is [`BASHUpdate.md`](BASHUpdate.md).
+- **`Passthrough`** is the mirror image: `HandleKey` handles it, but no such key exists in either
+  prefab (the Editor command that added it, `AddPassthroughMenuKey.cs`, was deleted) — the handler
+  is live and unreachable.
+
+An unknown key is deliberately inert and logs.
 
 `pointerControl` fires on trigger colliders tagged **`key`** and stretches the visible beam to the
 hit — but in a game scene `PointerBeam` overwrites the beam length absolutely every frame, and
-`MenuControl.keepPointerAlwaysOn` (ChasmGame only) leaves the pointer switched on outside the menu.
-See [The pointer](#the-pointer).
+`MenuControl.keepPointerAlwaysOn` (opted into by `PlateauSpawnMenu.Bind()`, ChasmGame only) leaves
+the pointer switched on outside the menu. See [The pointer](#the-pointer) and
+[The persistent rig](#the-persistent-rig).
 
 `GrabControl` (on `Left Grabber` / `Right Grabber`) tracks colliders tagged **`Grabbable`**;
 nothing is tagged that today, so `WorldGrab.CanStart`'s "two grips with a piece in hand is a piece
@@ -603,7 +704,8 @@ find in the scene.
 
 ## Input
 
-`InputReader` (on `Input Reader`, one per scene) polls `UnityEngine.XR.InputDevices` every frame
+`InputReader` (on `Input Reader`, one shared instance on `PersistentRig`) polls
+`UnityEngine.XR.InputDevices` every frame
 and republishes everything as plain public fields: level (`ButtonA`), edge-down (`ButtonADown`),
 edge-up (`ButtonAUp`), and analogue values. Two things to know:
 
@@ -640,7 +742,8 @@ re-align, so a horizontal nudge in the Editor would also re-align the rig.
 no adb, no extra UI. Right joystick click clears it. (It used to be the *left* click, which meant
 every recentre wiped the log you were reading to find out why you recentred.)
 
-`ColocationProbe` (on `XRRig`, **disabled in both game scenes**) prints one line a second:
+`ColocationProbe` (on `XRRig`, **disabled by default** on the shared `PersistentRig` instance)
+prints one line a second:
 rig/head height, `aligned`, `anchored`, `tracked`, the short UUID, the count of system-initiated
 recenters, the content scale, the lock holder, and every remote player's head/hand height. Its
 class comment is a read-it-like-this guide; the short version:
@@ -659,8 +762,9 @@ Enable it before changing anything in this area, and take a baseline first.
 
 Four edits, by design:
 
-1. A scene with `World Root` (+ `RoomContent`), `Input Reader`, `Menu Manager`, `XRRig`, board
-   geometry **at the origin**.
+1. A scene with `World Root` (+ `RoomContent`) and board geometry **at the origin**. Nothing else —
+   `Input Reader`, `Menu Manager`, `XRRig` and `Directional Light` come from `PersistentRig` for
+   free. See [The persistent rig](#the-persistent-rig).
 2. A key in `Menu1.prefab` whose `keyInfo.keyName` matches exactly.
 3. A `case` in `MenuControl.HandleKey` calling `RequestGame(keyName)`.
 4. A row in `GameRoutes.SceneByKey`, and the scene in the build list.
@@ -677,6 +781,16 @@ compiles fine and fails at runtime:
 no null check and will throw outright. `CameraController2` and `WorldGrab` search *descendants of
 the rig* by name at any depth rather than by path, because `"Camera Offset/Left Hand"` is exactly
 the kind of hardcoded path this project keeps getting bitten by.
+
+**Since `PersistentRig`, a `Find`-by-name break is silent everywhere at once, not just in the scene
+being edited** — there is one live instance of each of these names for the life of the app, not one
+per scene. The other failure mode is two objects sharing a name simultaneously: if a scene keeps
+its own local copy of something `PersistentRig` already provides, `Find` picks one
+non-deterministically. That is exactly what happened when `ChasmGame`'s local rig briefly coexisted
+with `PersistentRig` mid-migration — `PlateauSpawnMenu.Bind()`'s `Find("XRRig")` sometimes returned
+the wrong one and the piece-buying menu could never find itself to turn off. No scene should ever
+have its own copy of anything `PersistentRig` provides; if `Find("XRRig")` (or any name above) ever
+matches more than one active object, that is the bug, not a `Find` implementation detail.
 
 `PlateauBoard`/`PlateauPieceView`/`PlateauSelection` add to that list: `World Root` · `Plateaus` ·
 `Bridges` · `Pieces` · `Pointer` · **`Central Plateau`** (matched by exact string; without it the
@@ -695,9 +809,10 @@ whole board, and the numbers are on the wire. Adding one at the end is safe.
 parents **by name** until it hits `Right Grabber`/`Left Grabber`.
 
 **Serialized-field renames drop every scene's value silently.** `CameraController2.LeftHand` used
-to be `RightHand`; `StairsGame.unity` still carries the dead key. This is why several components
-re-resolve a null serialized reference in `Start()` — treat that as the pattern, not as belt and
-braces.
+to be `RightHand`; `PersistentRig.prefab` (built from `StairsGame`'s old copy) still has that dead
+data under the old key, orphaned, and reads null under the current name. This is why several
+components re-resolve a null serialized reference in `Start()` — treat that as the pattern, not as
+belt and braces.
 
 **`NetworkVariable` write permission is the security boundary.** `spawnSlot`, `playerName`,
 `roomOwner`, and everything on `RoomAnchor` are **server-written**; hand/head poses are
@@ -717,13 +832,15 @@ and `PlateauGame` despawn and respawn on a reconnect.
 
 ## Dead or unwired code
 
-- `NetworkReconnectHandler.cs` and `PersistentObject.cs` are **attached to nothing**. Several
-  comments (in `BoardAnchor`, `DebugLog`, `VisibleWhenLooking`) are written as though they are
-  live. The Network Manager survives scene loads because Netcode marks it `DontDestroyOnLoad`
-  itself, not because of `PersistentObject`.
-- `Assets/Scenes/GameScene.unity` — legacy, unreachable.
-- `MenuControl.worldRoot` is unassigned in both game scenes, so the board is not hidden behind an
-  open menu.
+- `NetworkReconnectHandler.cs` is **attached to nothing**. `PersistentObject.cs` used to be in the
+  same state but is not any more — it is on `PersistentRig`'s root now, doing exactly the
+  `DontDestroyOnLoad` job its one line always promised. The Network Manager still survives scene
+  loads because Netcode marks it `DontDestroyOnLoad` itself, independently of `PersistentObject`.
+- `Assets/Scenes/GameScene.unity` — legacy, unreachable. Migrated to source its rig from
+  `PersistentRig` like every other scene anyway, so it will not silently regress if it is ever
+  wired back into `GameRoutes`.
+- `MenuControl.worldRoot` is unassigned in every scene, so the board is not hidden behind an open
+  menu. Pre-existing and not scene-specific — it was already unset before `PersistentRig` existed.
 - Root clutter, not source: `BoardGames.apk`, `build/`,
   `MRBoardGame_BurstDebugInformation_DoNotShip/`, three `.sln` files,
   `Assets/Scenes/SampleScene/` (stale baked lighting).
@@ -736,6 +853,7 @@ are marked applied, corrected, or out of scope — check the code before trustin
 | File | Covers |
 | --- | --- |
 | [`plateauRules.md`](plateauRules.md) | The game's rules. Starting forces and movement are implemented; everything else is still the design target. It says 33 plateaus and the scene has 41 — the code counts children, so the doc is the stale one. |
+| [`BASHUpdate.md`](BASHUpdate.md) | **Not yet implemented.** The plan for porting BASH (`D:\Unity_Stuff\BASH_U6`) in as a third game: the GUID collisions a bulk copy would cause, the world-space → `World Root` local conversion its networking needs, and the scene to build. |
 | [`anchoringUpdate.md`](anchoringUpdate.md) | One anchor per room, the `World Root` content frame, the two-grip world grab. |
 | [`fixAnchoring.md`](fixAnchoring.md) | Colocated alignment, the nametag and hand-cone defects, the two-cones-and-a-name avatar. |
 | [`updates1.md`](updates1.md) | Earlier pass — root causes and ordering. |

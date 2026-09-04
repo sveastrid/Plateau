@@ -5,6 +5,9 @@
 *.obj binary
 *.mtl binary
 *.exr binary
+*.unity merge=unityyamlmerge eol=lf
+*.prefab merge=unityyamlmerge eol=lf
+*.asset merge=unityyamlmerge eol=lf
 
 # Shell scripts must keep LF endings or their shebang breaks on checkout
 .githooks/* text eol=lf

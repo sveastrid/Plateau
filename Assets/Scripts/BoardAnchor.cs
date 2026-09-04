@@ -11,11 +11,11 @@ using UnityEngine.SceneManagement;
 /// After that, world space is the same physical frame on every headset and every networked value in
 /// the project — hands, head, nametag, avatar root — means the same place in the real room.
 ///
-/// Lives on the Network Manager object, which Netcode marks DontDestroyOnLoad, because
-/// GameSelector's LoadSceneMode.Single game switch destroys the rig, the camera, the hands and the
-/// Menu Manager (PlayerControls.BindToScene, :214-251). The GameObject carrying the OVRSpatialAnchor
-/// is DontDestroyOnLoad for the same reason: re-loading and re-localising it on every game switch
-/// would be seconds of a wrong room every time somebody changes game.
+/// Lives on the Network Manager object, which Netcode marks DontDestroyOnLoad. The rig, camera,
+/// hands and Menu Manager also now live under PersistentRig (DontDestroyOnLoad) rather than being
+/// destroyed and recreated by GameSelector's LoadSceneMode.Single game switch, but the anchor itself
+/// stays DontDestroyOnLoad regardless: re-loading and re-localising it on every game switch would be
+/// seconds of a wrong room every time somebody changes game.
 ///
 /// Must run AFTER OVRSpatialAnchor.Update(), which is what refreshes the bound anchor's world pose
 /// for this frame from the runtime's tracking-space pose. Reading it at the default order gets last
@@ -172,9 +172,10 @@ public class BoardAnchor : MonoBehaviour
 
     void HandleActiveSceneChanged(Scene from, Scene to)
     {
-        // The rig and the Input Reader are new instances in the new scene and have never heard of
-        // this component. The HoldAlignment early-out on a null rig means a frame or two of no
-        // alignment during the load, which is invisible.
+        // The rig and Input Reader now live under PersistentRig and survive the scene switch, so
+        // this re-lookup is a harmless no-op that re-finds the same instances. Left in place so a
+        // future scene that doesn't get its rig from PersistentRig still degrades safely: the
+        // HoldAlignment early-out on a null rig means a frame or two of no alignment, not an error.
         rig = null;
         inputs = null;
     }

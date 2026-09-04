@@ -1,5 +1,6 @@
 using Unity.Netcode;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 
 /// <summary>
 /// The in-headset menu. X opens and closes it; the laser pointer plus the right trigger
@@ -47,6 +48,75 @@ public class MenuControl : MonoBehaviour
     /// owns it whenever it is open.
     /// </summary>
     public bool IsOpen => currentMenu != null;
+
+    /// <summary>
+    /// The pointer lives on PersistentRig and survives scene switches, so it can arrive in a scene
+    /// in whatever state the previous one left it. Reset it to the incoming scene's default.
+    ///
+    /// This hangs off activeSceneChanged, not Start(). Menu Manager is part of PersistentRig and is
+    /// therefore DontDestroyOnLoad, so Start() runs exactly once for the life of the app — in
+    /// OpeningScene — and could never reset anything for StairsGame or ChasmGame. Same pattern as
+    /// PlayerControls.BindToScene and BoardAnchor.HandleActiveSceneChanged.
+    /// </summary>
+    void Start()
+    {
+        SceneManager.activeSceneChanged += HandleActiveSceneChanged;
+        ApplyPointerDefault();
+    }
+
+    void OnDestroy()
+    {
+        SceneManager.activeSceneChanged -= HandleActiveSceneChanged;
+    }
+
+    private void HandleActiveSceneChanged(Scene from, Scene to)
+    {
+        // LoadSceneMode.Single already destroyed the open menu — it is instantiated unparented into
+        // the active scene — so these are dangling. Clearing them keeps IsOpen honest rather than
+        // relying on Unity's destroyed-object null.
+        currentMenu = null;
+        currentPointer = null;
+        pressedKey = null;
+
+        ApplyPointerDefault();
+    }
+
+    /// <summary>
+    /// A game scene shows the pointer only while the menu is open, unless it opted out with
+    /// keepPointerAlwaysOn. The lobby is the exception: its keyboard IS the interaction, and it has
+    /// no menu to gate the pointer behind.
+    ///
+    /// The lobby case is not belt and braces. GameController.Start() switches the pointer on for the
+    /// keyboard, and PersistentRig put a MenuControl in OpeningScene alongside it — so before this
+    /// check the two raced on the same frame with no ordering guarantee, and MenuControl won: the
+    /// pointer came up dead and no key on the keyboard could be pressed.
+    /// </summary>
+    private void ApplyPointerDefault()
+    {
+        if (pointer == null)
+        {
+            return;
+        }
+
+        bool lobby = !GameRoutes.IsGameScene(SceneManager.GetActiveScene().name);
+        pointer.gameObject.SetActive(keepPointerAlwaysOn || lobby);
+    }
+
+    /// <summary>
+    /// A game whose pointer also touches the board — ChasmGame, via PointerBeam — opts in here
+    /// rather than by changing the shared PersistentRig default and taking the other scenes down
+    /// with it.
+    ///
+    /// Set the flag through this, never by assigning the field. HandleActiveSceneChanged has
+    /// already run and switched the pointer off by the time any scene component's first Update
+    /// calls this, so a bare assignment would leave the pointer dead until the player opened and
+    /// closed the menu.
+    /// </summary>
+    public void SetKeepPointerAlwaysOn(bool value)
+    {
+        keepPointerAlwaysOn = value;
+        ApplyPointerDefault();
+    }
 
     void Update()
     {

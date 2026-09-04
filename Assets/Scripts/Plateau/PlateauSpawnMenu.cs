@@ -297,6 +297,15 @@ public class PlateauSpawnMenu : MonoBehaviour
         {
             GameObject go = GameObject.Find("Menu Manager");
             menu = go != null ? go.GetComponent<MenuControl>() : null;
+
+            // Menu Manager now lives on PersistentRig and is shared with every other scene, which
+            // authors keepPointerAlwaysOn = false (menu-only pointer). ChasmGame is the one game
+            // where the pointer also touches the board itself (see PointerBeam), so force it here
+            // rather than on the shared default.
+            if (menu != null)
+            {
+                menu.SetKeepPointerAlwaysOn(true);
+            }
         }
 
         if (selection == null)

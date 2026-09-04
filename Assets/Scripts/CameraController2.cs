@@ -1,5 +1,6 @@
 using Unity.Netcode;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 
 public class CameraController2 : MonoBehaviour
 {
@@ -167,7 +168,9 @@ public class CameraController2 : MonoBehaviour
     {
         // The lobby has an XRRig too, and its layout is the keyboard in front of the user.
         // Moving that rig onto the ring would drag somebody out of typing their username.
-        if (!GameRoutes.IsGameScene(gameObject.scene.name))
+        // gameObject.scene.name is unusable here: the rig lives under PersistentRig
+        // (DontDestroyOnLoad), so it always reports the "DontDestroyOnLoad" pseudo-scene.
+        if (!GameRoutes.IsGameScene(SceneManager.GetActiveScene().name))
         {
             return;
         }

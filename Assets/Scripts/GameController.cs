@@ -33,7 +33,17 @@ public class GameController : MonoBehaviour
     // Start is called before the first frame update
     void Start()
     {
-
+        // The keyboard IS the interaction here — there is no menu to gate the pointer behind — so
+        // it has to be on from the first frame or no key can ever be pressed.
+        //
+        // OpeningScene DOES have a MenuControl: it comes in with PersistentRig. Both this and
+        // MenuControl.ApplyPointerDefault write the pointer's active state on load, and Unity gives
+        // no ordering guarantee between two Start() calls, so the two must AGREE rather than one
+        // winning. MenuControl's lobby branch is what makes them agree; do not remove either half.
+        if (pointer != null)
+        {
+            pointer.gameObject.SetActive(true);
+        }
     }
 
     // Update is called once per frame
