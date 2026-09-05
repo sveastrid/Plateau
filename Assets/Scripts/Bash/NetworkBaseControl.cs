@@ -6,10 +6,15 @@ using UnityEngine;
 /// child index n + 4, and the RPC pairs that keep piece visibility, selection rings and resets in
 /// step across the room.
 ///
-/// activePos/activeRot are owner-written, which is right and matches this project's rule that
-/// hand- and head-like per-player values are owner-written. What changed in the port is the
-/// space: both are now measured in BashRoot's local frame rather than world space, because the
-/// board moves, turns and rescales under the two-grip world grab. See BashRoot.
+/// activeRot is owner-written, which is right and matches this project's rule that hand- and
+/// head-like per-player values are owner-written. What changed in the port is the space: it is now
+/// measured in BashRoot's local frame rather than world space, because the board moves, turns and
+/// rescales under the two-grip world grab. See BashRoot.
+///
+/// Where a piece ENDS UP, though, is an RPC — MoveGamepiece — and not a NetworkVariable. See the
+/// comment there: a pose that only says "where" and not "which piece" cannot be applied by a
+/// client that has already been told the piece was deselected, and that is exactly the order
+/// Netcode delivers the two in.
 /// </summary>
 public class NetworkBaseControl : NetworkBehaviour
 {
@@ -19,14 +24,13 @@ public class NetworkBaseControl : NetworkBehaviour
     public Material safeBase;
     public Material destroyedBase;
 
-    // Board-local position, and a board-local forward direction. activeRot is the *committed*
-    // heading: while spinning is true the displayed heading is this rotated by the elapsed angle,
-    // and freezing writes the derived heading back into it.
-    public NetworkVariable<Vector3> activePos = new NetworkVariable<Vector3>(new Vector3(0, 0, 0), NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Owner);
+    // A board-local forward direction, and the *committed* heading: while spinning is true the
+    // displayed heading is this rotated by the elapsed angle, and freezing writes the derived
+    // heading back into it.
     public NetworkVariable<Vector3> activeRot = new NetworkVariable<Vector3>(new Vector3(0, 0, 0), NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Owner);
 
     /// <summary>
-    /// Server time the spin began. Owner-written like the two above, and for the same reason.
+    /// Server time the spin began. Owner-written like activeRot above, and for the same reason.
     ///
     /// The heading is derived from this rather than pushed, so a spin costs one write per
     /// selection instead of one NetworkVariable delta per network tick for as long as anybody
@@ -48,20 +52,6 @@ public class NetworkBaseControl : NetworkBehaviour
         {
             AttachToControls();
         }
-
-        this.activePos.OnValueChanged += (oldVal, newVal) =>
-        {
-            if (activeGamepiece != null)
-            {
-                activeGamepiece.transform.position = BashRoot.ToWorldPoint(newVal);
-                //turn off the yellow ring if it is still on
-                if (activeGamepiece.transform.GetChild(1).gameObject.activeSelf)
-                {
-                    activeGamepiece.transform.GetChild(1).gameObject.SetActive(false);
-                }
-            }
-
-        };
 
         this.activeRot.OnValueChanged += (oldVal, newVal) =>
         {
@@ -191,13 +181,70 @@ public class NetworkBaseControl : NetworkBehaviour
         spinning.Value = false;
     }
 
+    // ------------------------------------------------------------------ the end of a move
+
+    /// <summary>
+    /// Put a piece where its move ended, on every client.
+    ///
+    /// An RPC pair rather than a NetworkVariable, and that is the whole point of it. It used to be
+    /// a board-local `activePos` whose OnValueChanged moved `activeGamepiece` — but the frame that
+    /// publishes the pose is the same frame that deselects, and Netcode does not deliver those two
+    /// together: an RPC is queued the moment it is called, a NetworkVariable delta only at the end
+    /// of the tick. So SetActiveGamepieceClientRpc(-1) reliably arrived FIRST and every client but
+    /// the shooter applied the new position with activeGamepiece already null — the trail appeared
+    /// and the piece stayed on its old square until its owner selected it again, which republished
+    /// a pose at a moment when something was selected to receive it.
+    ///
+    /// Naming the piece in the message removes the dependency altogether: it no longer matters
+    /// what is selected anywhere, or when this arrives relative to anything else.
+    /// </summary>
+    public void MoveGamepiece(int n, Vector3 localPos, Vector3 localForward)
+    {
+        // Locally first, so the shooter's own piece does not wait on the round trip. The ClientRpc
+        // comes back to the shooter too and re-applies the same numbers, which is harmless.
+        ApplyMove(n, localPos, localForward);
+        MoveGamepieceServerRpc(n, localPos, localForward);
+    }
+
+    [ServerRpc(RequireOwnership = false)]
+    private void MoveGamepieceServerRpc(int n, Vector3 localPos, Vector3 localForward)
+    {
+        MoveGamepieceClientRpc(n, localPos, localForward);
+    }
+
+    [ClientRpc]
+    private void MoveGamepieceClientRpc(int n, Vector3 localPos, Vector3 localForward)
+    {
+        ApplyMove(n, localPos, localForward);
+    }
+
+    /// <summary>Board-local in, world out: a piece hangs under Bash Root, which the players are
+    /// free to move, turn and rescale under it. See BashRoot.</summary>
+    void ApplyMove(int n, Vector3 localPos, Vector3 localForward)
+    {
+        if (n < 0 || n > 3)
+        {
+            return;
+        }
+
+        Transform piece = transform.GetChild(n);
+        piece.position = BashRoot.ToWorldPoint(localPos);
+        Look(piece, localForward);
+
+        //turn off the yellow ring if it is still on
+        if (piece.GetChild(1).gameObject.activeSelf)
+        {
+            piece.GetChild(1).gameObject.SetActive(false);
+        }
+    }
+
     /// <summary>
     /// Let the piece go at the end of a turn: no selection ring, nothing spinning. SetActiveGamepiece
     /// alone is not enough — it does not touch the ring, which ChangeGamePiece turns off separately.
     ///
-    /// Call this AFTER the pose has been published: activePos.Value raises OnValueChanged
-    /// synchronously on the writer and that callback is what teleports the piece, so deselecting
-    /// first would null activeGamepiece and the piece would stay where it was.
+    /// Safe to call in any order relative to MoveGamepiece, which is the point of that being an
+    /// RPC that names its piece. It was not always: while the move rode on an `activePos`
+    /// NetworkVariable, deselecting first nulled the very reference the pose callback needed.
     /// </summary>
     public void Deselect()
     {
@@ -335,9 +382,8 @@ public class NetworkBaseControl : NetworkBehaviour
             activeGamepiece = transform.GetChild(n).gameObject;
             if (IsOwner)
             {
-                // Owner-written, so only the player whose base this is may publish the pose.
+                // Owner-written, so only the player whose base this is may publish the heading.
                 activeRot.Value = BashRoot.ToLocalDirection(activeGamepiece.transform.forward);
-                activePos.Value = BashRoot.ToLocalPoint(activeGamepiece.transform.position);
             }
         }
         SetActiveGamepieceServerRpc(n);

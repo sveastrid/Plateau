@@ -1319,8 +1319,6 @@ MonoBehaviour:
   controls: {fileID: 0}
   safeBase: {fileID: 2100000, guid: b3703982c5ea6664e8e36f747d0e0449, type: 2}
   destroyedBase: {fileID: 2100000, guid: 706db4cc15f858d459ef70f46f989820, type: 2}
-  activePos:
-    m_InternalValue: {x: 0, y: 0, z: 0}
   activeRot:
     m_InternalValue: {x: 0, y: 0, z: 0}
 --- !u!1 &7192987461095853528

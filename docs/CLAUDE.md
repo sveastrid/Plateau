@@ -762,6 +762,18 @@ line apart precisely because as bare integer comparisons they look like a mistak
 The heading is derived from `NetworkManager.ServerTime` and a single `spinStartTime` write rather
 than streamed per tick, so every headset puts the dot in the same place.
 
+**Where a piece ends up is an RPC that names the piece — `NetworkBaseControl.MoveGamepiece` — not a
+`NetworkVariable`.** It was an owner-written `activePos` whose `OnValueChanged` moved
+`activeGamepiece`, and that cannot work: the frame that publishes the pose is the frame that
+deselects, and Netcode does not deliver those two together. An RPC is queued the moment it is
+called and a `NetworkVariable` delta only at the end of the tick, so `SetActiveGamepieceClientRpc(-1)`
+reliably arrived **first** and every client but the shooter applied the new position with
+`activeGamepiece` already `null`. The trail appeared and the piece stayed on its old square until its
+owner selected it again — which republished a pose at a moment when something was selected to
+receive it. Naming the piece in the message removes the dependency on selection order altogether.
+`activeRot` stays a `NetworkVariable` because the spin is *derived* from it every frame on every
+client, and it is only ever written while a piece is selected.
+
 `ControlListener.Phase` (`Idle` → `Aiming` → `Lobbing` → `Spinning` → `Firing`) holds all of this.
 **The phase lives on the controller, not on the piece**, which is what makes cancelling behave: a
 boat that loses its lob to an opened menu returns to `Aiming` and may lob again, while one that
@@ -774,6 +786,18 @@ While a movement line is drawn it is a live collider, and what it touches decide
 | `gamepiece` | destroyed — but **only if the line `killsPieces`**, i.e. the spin-aimed shot of a sub or helicopter. A boat's or plane's post-lob move is harmless |
 | `obstacle` | walls and base pads: the shot ends there and **your** piece dies. Not gated — a harmless move still stops on a wall |
 | `island` | `IsSurfaceCraft` (boat, sub) die; plane and helicopter fly over. Not gated either, or a plane's harmless move would be a way to park inside an island |
+
+**`LineControls` owns those rules; it is no longer the only thing that evaluates them.** A trigger
+fires on a physics step — 0.02 s, against a headset rendering at 72–90 and with
+`m_AutoSyncTransforms` `0` — and late in a shot the tip covers about 0.2 board units per frame
+against a wall 0.04 thick. So a shot could cross a wall and be released between two steps, and
+nothing would ever look: `EndCannonLine` clears `checkForCollisions` on the way out. That is a
+submarine driving into a wall and living. `ControlListener.GrowTip` therefore sweeps each segment
+with a raycast **in the frame it is drawn** and asks `LineControls.Blocks` / `LineControls.Hit` — the
+same two rules — so the trail also stops *at* the wall rather than one step past it. Both halves are
+idempotent, which is what lets the sweep and the trigger report the same hit without special-casing
+each other. `QueryTriggerInteraction.Collide` is mandatory in that sweep: every collider on this
+board is a trigger, so the default finds nothing at all, silently.
 
 The turn ends by deselecting the piece, so nothing is left spinning on the board after a player has
 acted — but that deselection is the whole of the "turn". Still not turn-based and still no win
@@ -813,7 +837,8 @@ under the two-grip world grab.
   worldPositionStays: false)`** on the server, so Netcode replicates the parenting and every
   client's objects inherit `World Root`'s pose and scale for free. The local transform is set
   before the reparent, which is what makes those exact numbers survive it.
-- `NetworkBaseControl.activePos`/`activeRot` are board-local, converted back on the way out.
+- `NetworkBaseControl.activeRot` and the pose `MoveGamepiece` sends are board-local, converted back
+  on the way out.
 - `PipeRenderer` treats its point list as **mesh vertices in the pipe object's own local space**,
   which is why the line objects sit on `Bash Root` at an identity local transform and the points
   are fed in already converted.

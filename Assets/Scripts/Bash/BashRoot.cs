@@ -8,8 +8,8 @@ using UnityEngine;
 /// scale for free.
 ///
 /// It exists because BASH was written for a world that never moved. Its board sat at world
-/// (0, 0.6, 2) and every networked value in it — NetworkBaseControl.activePos/activeRot, the
-/// point list a shot is made of — was a plain world-space Vector3. In this project World Root
+/// (0, 0.6, 2) and every networked value in it — NetworkBaseControl.activeRot and the poses it
+/// sends, the point list a shot is made of — was a plain world-space Vector3. In this project World Root
 /// moves, rotates and rescales continuously under the two-grip world grab, so a world-space value
 /// for anything parented under it goes stale the instant somebody grabs the board. This is the
 /// same problem PlateauBoard already solved, and the answer is the same one CLAUDE.md states:

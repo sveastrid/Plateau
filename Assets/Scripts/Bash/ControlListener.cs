@@ -113,6 +113,19 @@ public class ControlListener : MonoBehaviour
 
     private Phase phase = Phase.Idle;
 
+    /// <summary>
+    /// Set the moment something in the world stops the trail, by either of the two things that can
+    /// notice — the trail's own trigger, or GrowTip's sweep. It is what stops the commit below
+    /// growing the trail one more step past the wall it just stopped at, and it is what tells the
+    /// commit that this shot ends in the shooter's own piece dying.
+    /// </summary>
+    private bool trailBlocked;
+
+    // Scratch for GrowTip's sweep. Sized for the number of colliders ONE FRAME of trail can run
+    // through, not for the board: RaycastNonAlloc silently stops filling at the array's length,
+    // and a missed wall is the exact bug the sweep exists to remove.
+    private readonly RaycastHit[] sweepHits = new RaycastHit[16];
+
     private LineControls arcLineControl;
     private PipeRenderer arcPipe;
     private Vector3 arcOrigin;
@@ -276,6 +289,7 @@ public class ControlListener : MonoBehaviour
     void BeginShot(Transform frame)
     {
         currentCannonSpeed = initialCannonSpeed;
+        trailBlocked = false;
         netBaseControl.TurnOffMyColliders();
 
         // A child of Bash Root with an identity local transform, because PipeRenderer treats the
@@ -316,31 +330,129 @@ public class ControlListener : MonoBehaviour
     {
         currentDirection = BashRoot.RotateInXZ(currentDirection,
             -cannonTiltSpeed * Inputs.rightJoystick.x * Time.deltaTime);
-        currentLinePoints.Add(currentLinePoints[currentLinePoints.Count - 1] +
-                              currentCannonSpeed * currentDirection * Time.deltaTime);
-        currentCannonLine.SetPositions(currentLinePoints.ToArray());
+        GrowTip(currentLinePoints[currentLinePoints.Count - 1] +
+                currentCannonSpeed * currentDirection * Time.deltaTime);
         currentCannonSpeed += cannonAcceleration;
+
+        if (trailBlocked)
+        {
+            EndCannonLine();
+        }
     }
 
     /// <summary>
-    /// Commit the shot: publish it to the room and teleport the piece to the end of the trail.
-    /// Also called by LineControls the moment the trail touches something that stops it.
+    /// Grow the trail to <paramref name="to"/> — or only as far as the first thing that stops it —
+    /// and apply LineControls' rules to everything the new segment ran through.
+    ///
+    /// The trail's MeshCollider still raises OnTriggerEnter and LineControls still owns the rules.
+    /// What this changes is WHEN they are evaluated. A trigger is only tested on a physics step,
+    /// which is 50 Hz here against a headset rendering at 72-90 and with m_AutoSyncTransforms 0,
+    /// and late in a shot the tip covers about 0.2 board units per frame against a wall 0.04
+    /// thick. So a shot can cross a wall and be released before any step ever looks at it, and
+    /// nothing after that will: EndCannonLine clears checkForCollisions on the way out. That is a
+    /// submarine driving into a wall and living. Sweeping the one segment just drawn, in the frame
+    /// it is drawn, makes the wall and island rules exact instead of merely likely.
     /// </summary>
-    public void EndCannonLine()
+    void GrowTip(Vector3 to)
+    {
+        Vector3 from = currentLinePoints[currentLinePoints.Count - 1];
+        Vector3 worldFrom = BashRoot.ToWorldPoint(from);
+        Vector3 step = BashRoot.ToWorldPoint(to) - worldFrom;
+        float distance = step.magnitude;
+
+        if (newCannonLineControl != null && distance > 0f)
+        {
+            // Same reason ResolveArc and PointerBeam do it: RoomContent is still smoothing World
+            // Root during Update and m_AutoSyncTransforms is 0, so without this the sweep reads
+            // collider poses from the last FixedUpdate.
+            Physics.SyncTransforms();
+
+            // Walls, base pads, islands and gamepieces are all TRIGGERS in this scene.
+            // QueryTriggerInteraction.Collide is mandatory; the default would find nothing at all,
+            // silently, and the sweep would be an expensive no-op.
+            int count = Physics.RaycastNonAlloc(worldFrom, step / distance, sweepHits, distance,
+                                                Physics.DefaultRaycastLayers,
+                                                QueryTriggerInteraction.Collide);
+
+            // A ray never reports a collider it starts inside, which is what keeps a piece firing
+            // from its own pad — tagged obstacle — from dying on the first segment.
+            float stop = float.PositiveInfinity;
+            for (int i = 0; i < count; i++)
+            {
+                if (sweepHits[i].distance < stop && newCannonLineControl.Blocks(sweepHits[i].collider))
+                {
+                    stop = sweepHits[i].distance;
+                    to = BashRoot.ToLocalPoint(sweepHits[i].point);
+                }
+            }
+
+            // Nearest blocker first, so a piece standing behind the wall the shot stopped at is
+            // not killed through it.
+            for (int i = 0; i < count; i++)
+            {
+                if (sweepHits[i].distance <= stop)
+                {
+                    newCannonLineControl.Hit(sweepHits[i].collider);
+                }
+            }
+
+            if (!float.IsPositiveInfinity(stop))
+            {
+                trailBlocked = true;
+            }
+        }
+
+        // A blocker right on the previous tip clamps `to` back onto it, and a repeated point is
+        // not harmless: PipeRenderer.GenerateCylinder FromToRotations the difference between
+        // consecutive positions, and at zero length that is a zero vector and the mesh comes out
+        // degenerate or NaN with no exception. Same trap minArcRange guards for the arc. The trail
+        // simply ends one point short, which is where it was going to end anyway.
+        if ((to - from).sqrMagnitude > 0f)
+        {
+            currentLinePoints.Add(to);
+            currentCannonLine.SetPositions(currentLinePoints.ToArray());
+        }
+    }
+
+    /// <summary>
+    /// The trail's own collider found something that stops it. End the shot where it stands rather
+    /// than one step further on, and let the commit below kill the piece that fired it.
+    /// </summary>
+    public void StopShotHere()
+    {
+        trailBlocked = true;
+        EndCannonLine();
+    }
+
+    /// <summary>
+    /// Commit the shot: publish it to the room, move the piece to the end of the trail, and — if
+    /// something stopped the trail rather than the player letting go — destroy that piece.
+    /// </summary>
+    void EndCannonLine()
     {
         // LineControls can reach here twice in one frame — a trail entering the corner where two
         // walls meet raises two OnTriggerEnter calls. Without this the second one indexes an
         // empty list.
         if (currentLinePoints.Count == 0 || currentCannonLine == null)
         {
+            trailBlocked = false;
             return;
         }
 
-        currentDirection = BashRoot.RotateInXZ(currentDirection,
-            cannonTiltSpeed * Inputs.rightJoystick.x * Time.deltaTime);
-        currentLinePoints.Add(currentLinePoints[currentLinePoints.Count - 1] +
-                              currentCannonSpeed * currentDirection * Time.deltaTime);
-        currentCannonLine.SetPositions(currentLinePoints.ToArray());
+        // One last step, unless something already stopped the trail — growing past the wall it
+        // stopped at is exactly what this used to do.
+        if (!trailBlocked)
+        {
+            currentDirection = BashRoot.RotateInXZ(currentDirection,
+                cannonTiltSpeed * Inputs.rightJoystick.x * Time.deltaTime);
+            GrowTip(currentLinePoints[currentLinePoints.Count - 1] +
+                    currentCannonSpeed * currentDirection * Time.deltaTime);
+        }
+
+        // Read BEFORE Deselect: it nulls activeGamepiece, so both the move and the kill below
+        // would silently address nothing.
+        int moved = ActivePieceIndex();
+        int killed = trailBlocked ? moved : -1;
 
         if (netSpawnManager != null)
         {
@@ -350,18 +462,18 @@ public class ControlListener : MonoBehaviour
         if (netBaseControl != null)
         {
             // Board-local, like the points themselves. NetworkBaseControl converts back on the
-            // way out.
-            netBaseControl.activePos.Value = currentLinePoints[currentLinePoints.Count - 1];
-            netBaseControl.activeRot.Value = currentDirection;
+            // way out, on every client, naming the piece so that none of this depends on what any
+            // of them currently has selected.
+            netBaseControl.MoveGamepiece(moved, currentLinePoints[currentLinePoints.Count - 1],
+                                         currentDirection);
             netBaseControl.TurnOnMyColliders();
 
-            // The turn is over. AFTER the pose is published: activePos.Value raises
-            // OnValueChanged synchronously on the writer and that callback is what teleports the
-            // piece, so deselecting first would null activeGamepiece and leave it where it was.
+            // The turn is over.
             netBaseControl.Deselect();
         }
 
         phase = Phase.Idle;
+        trailBlocked = false;
 
         currentLinePoints.Clear();
         if (newCannonLineControl != null)
@@ -375,6 +487,13 @@ public class ControlListener : MonoBehaviour
         }
         currentCannonLine = null;
         currentCannonSpeed = initialCannonSpeed;
+
+        // Last, and only after the piece has been moved and published: a bad shot costs you the
+        // piece, and the wreck is left at the wall it hit.
+        if (killed >= 0 && netBaseControl != null)
+        {
+            netBaseControl.TurnOffGamepiece(killed);
+        }
     }
 
     /// <summary>
@@ -394,6 +513,8 @@ public class ControlListener : MonoBehaviour
         {
             EnterSpinning();
         }
+
+        trailBlocked = false;
 
         if (currentLinePoints.Count == 0 && newCannonLineControl == null && arcPipe == null)
         {
