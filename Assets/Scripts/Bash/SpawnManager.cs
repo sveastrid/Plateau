@@ -1,3 +1,4 @@
+using System.Collections;
 using Unity.Netcode;
 using UnityEngine;
 
@@ -182,13 +183,19 @@ public class SpawnManager : NetworkBehaviour
 
     // ------------------------------------------------------------------ trails
 
-    public void SpawnNetworkCannonLine(Vector3[] linePoints)
+    /// <summary>
+    /// Publish a finished trail to the room. lifetime 0 means "for ever", which is what a movement
+    /// line passes and what keeps its behaviour identical: it is the record of where a piece went.
+    /// An artillery arc is not — it describes a shell that has already landed — so it passes a
+    /// lifetime and is despawned rather than doubling the trails-grow-without-bound rough edge.
+    /// </summary>
+    public void SpawnNetworkCannonLine(Vector3[] linePoints, float lifetime = 0f)
     {
-        SpawnNetworkCannonLineServerRpc(linePoints, LocalSeat());
+        SpawnNetworkCannonLineServerRpc(linePoints, LocalSeat(), lifetime);
     }
 
     [ServerRpc(RequireOwnership = false)]
-    private void SpawnNetworkCannonLineServerRpc(Vector3[] linePoints, int materialNumber)
+    private void SpawnNetworkCannonLineServerRpc(Vector3[] linePoints, int materialNumber, float lifetime)
     {
         NetworkObject frame = BashRoot.SpawnParent;
         if (frame == null)
@@ -215,6 +222,26 @@ public class SpawnManager : NetworkBehaviour
         // PipeRenderer builds its mesh in.
         newCannonLine.GetComponent<PipeRenderer>().SetPositions(linePoints);
         SyncLinePointsClientRpc(netLine.NetworkObjectId, linePoints, materialNumber);
+
+        if (lifetime > 0f)
+        {
+            StartCoroutine(DespawnAfter(netLine, lifetime));
+        }
+    }
+
+    /// <summary>
+    /// Server-side timed despawn — the only network lifecycle in BASH that is not "Reset Game".
+    /// Guarded on both counts because Reset Game (NetworkBaseControl.DeleteAllLinesServerRpc) can
+    /// get to the same object first.
+    /// </summary>
+    IEnumerator DespawnAfter(NetworkObject netObj, float seconds)
+    {
+        yield return new WaitForSeconds(seconds);
+
+        if (netObj != null && netObj.IsSpawned)
+        {
+            netObj.Despawn(true);
+        }
     }
 
     [ClientRpc]

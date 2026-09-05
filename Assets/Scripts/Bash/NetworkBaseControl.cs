@@ -19,9 +19,28 @@ public class NetworkBaseControl : NetworkBehaviour
     public Material safeBase;
     public Material destroyedBase;
 
-    // Board-local position, and a board-local forward direction.
+    // Board-local position, and a board-local forward direction. activeRot is the *committed*
+    // heading: while spinning is true the displayed heading is this rotated by the elapsed angle,
+    // and freezing writes the derived heading back into it.
     public NetworkVariable<Vector3> activePos = new NetworkVariable<Vector3>(new Vector3(0, 0, 0), NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Owner);
     public NetworkVariable<Vector3> activeRot = new NetworkVariable<Vector3>(new Vector3(0, 0, 0), NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Owner);
+
+    /// <summary>
+    /// Server time the spin began. Owner-written like the two above, and for the same reason.
+    ///
+    /// The heading is derived from this rather than pushed, so a spin costs one write per
+    /// selection instead of one NetworkVariable delta per network tick for as long as anybody
+    /// anywhere has a piece selected — and every headset draws the cannon dot in the same place
+    /// because they are all evaluating the same formula against the same NetworkManager.ServerTime.
+    /// </summary>
+    public NetworkVariable<double> spinStartTime = new NetworkVariable<double>(0d, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Owner);
+
+    public NetworkVariable<bool> spinning = new NetworkVariable<bool>(false, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Owner);
+
+    /// <summary>A full sweep every four seconds. Shared, not per-base: every client derives the
+    /// heading from it, so a value that differed between headsets would put the dot in a
+    /// different place on each.</summary>
+    public const float SpinDegreesPerSecond = 90f;
 
     private void Start()
     {
@@ -109,6 +128,90 @@ public class NetworkBaseControl : NetworkBehaviour
         {
             piece.rotation = Quaternion.LookRotation(world);
         }
+    }
+
+    // ------------------------------------------------------------------ the spinning aim
+
+    /// <summary>
+    /// Draw the spin. Every client runs this for every base, so the first line is the whole cost
+    /// for a base with nothing selected: one bool read per frame.
+    ///
+    /// The piece is what rotates — the coloured cannon dot is its fourth child and has no
+    /// transform of its own that moves, so "the dot swings round the piece" and "the piece spins"
+    /// are the same change.
+    /// </summary>
+    void Update()
+    {
+        if (!spinning.Value || activeGamepiece == null)
+        {
+            return;
+        }
+
+        NetworkManager nm = NetworkManager.Singleton;
+        if (nm == null)
+        {
+            return;
+        }
+
+        float angle = (float)(nm.ServerTime.Time - spinStartTime.Value) * SpinDegreesPerSecond;
+        Look(activeGamepiece.transform, BashRoot.RotateInXZ(activeRot.Value, angle));
+    }
+
+    /// <summary>Start sweeping from the committed heading. One write, not one per tick.</summary>
+    public void StartSpin()
+    {
+        NetworkManager nm = NetworkManager.Singleton;
+        if (!IsOwner || nm == null)
+        {
+            return;
+        }
+
+        spinStartTime.Value = nm.ServerTime.Time;
+        spinning.Value = true;
+    }
+
+    /// <summary>
+    /// Commit the spun heading, so everybody snaps to exactly the heading the shooter saw.
+    ///
+    /// Must run BEFORE the shot samples the muzzle: Netcode raises OnValueChanged synchronously on
+    /// the writer, so writing activeRot here turns the piece in the same statement and the muzzle
+    /// read that follows is already correct. Reverse the two and every shot leaves from one
+    /// frame's worth of rotation behind where the player aimed.
+    /// </summary>
+    public void FreezeSpin()
+    {
+        NetworkManager nm = NetworkManager.Singleton;
+        if (!IsOwner || !spinning.Value || nm == null)
+        {
+            return;
+        }
+
+        float angle = (float)(nm.ServerTime.Time - spinStartTime.Value) * SpinDegreesPerSecond;
+        activeRot.Value = BashRoot.RotateInXZ(activeRot.Value, angle);
+        spinning.Value = false;
+    }
+
+    /// <summary>
+    /// Let the piece go at the end of a turn: no selection ring, nothing spinning. SetActiveGamepiece
+    /// alone is not enough — it does not touch the ring, which ChangeGamePiece turns off separately.
+    ///
+    /// Call this AFTER the pose has been published: activePos.Value raises OnValueChanged
+    /// synchronously on the writer and that callback is what teleports the piece, so deselecting
+    /// first would null activeGamepiece and the piece would stay where it was.
+    /// </summary>
+    public void Deselect()
+    {
+        if (activeGamepiece != null)
+        {
+            TurnOffSelectionRing(activeGamepiece.transform.GetSiblingIndex());
+        }
+
+        if (IsOwner)
+        {
+            spinning.Value = false;
+        }
+
+        SetActiveGamepiece(-1);
     }
 
     [ServerRpc(RequireOwnership = false)]
@@ -312,28 +415,43 @@ public class NetworkBaseControl : NetworkBehaviour
         transform.GetChild(n + 4).GetComponent<Renderer>().material = safeBase;
     }
 
-    public void ChangeGamePiece(GameObject newGamepiece)
+    /// <summary>
+    /// Select one of this base's pieces. Returns whether the selection actually took: the early
+    /// returns below are the normal case, not an error, and ControlListener has to know which
+    /// phase to start (or whether to start one at all) from the answer.
+    /// </summary>
+    public bool ChangeGamePiece(GameObject newGamepiece)
     {
         // A destroyed piece is SetActive(false) rather than deleted, and pointerControl gets no
         // OnTriggerExit when its target is switched off under it — so without this a stale
         // currentGamepiece would let a player re-select a piece that is already dead.
         if (newGamepiece == null || !newGamepiece.activeInHierarchy)
         {
-            return;
+            return false;
         }
 
         NetworkObject owner = newGamepiece.GetComponentInParent<NetworkObject>();
         if (owner == null || !owner.IsOwner)
         {
-            return;                     // somebody else's piece, or not part of a base at all
+            return false;               // somebody else's piece, or not part of a base at all
         }
 
         if (activeGamepiece != null)
         {
             TurnOffSelectionRing(activeGamepiece.transform.GetSiblingIndex());
         }
+
+        // Stop any spin the outgoing piece was carrying before SetActiveGamepiece publishes the
+        // incoming one's heading, so the new spin starts from that heading rather than inheriting
+        // a stale spinStartTime and jumping.
+        if (IsOwner)
+        {
+            spinning.Value = false;
+        }
+
         SetActiveGamepiece(newGamepiece.transform.GetSiblingIndex());
         TurnOnSelectionRing(activeGamepiece.transform.GetSiblingIndex());
+        return true;
     }
 
     //piece numbers are boat="0", plane = "1", sub = "2", heli = "3"

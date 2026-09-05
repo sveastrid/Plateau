@@ -56,6 +56,10 @@ public class PlateauSelection : MonoBehaviour
     PlateauPieceTag hovered;
     PlateauPieceTag pressedPiece;
     int pressedPlateau = -1;
+    /// <summary>The BAR the press landed on, when it landed on one — not just the plateau that bar
+    /// names. Two free bars can reach the same plateau from two different plateaus in your system,
+    /// and the server no longer guesses between them. -1 when the press was on bare plateau.</summary>
+    int pressedEdge = -1;
 
     /// <summary>The plateau chosen with nothing selected, for the spawn menu's Gemheart/Chasmfiend
     /// keys. Independent of `selected` — see TryGetSelectedPlateau.</summary>
@@ -365,9 +369,12 @@ public class PlateauSelection : MonoBehaviour
         // spot resolves to nothing, the same inertness as missing a piece or a plateau outright.
         // No-op for any non-bridge selection, since candidateEdges is only ever populated for
         // PieceKind.Bridge.
+        int hitCandidateEdge = -1;
         if (hitEdge >= 0)
         {
             hitPlateau = ResolveBridgeSpotPlateau(game, hitEdge);
+            // Keep the bar itself, not just the plateau it names.
+            hitCandidateEdge = hitPlateau >= 0 ? hitEdge : -1;
         }
 
         bool overLegal = hitPlateau >= 0 && legal.Contains(hitPlateau);
@@ -384,7 +391,9 @@ public class PlateauSelection : MonoBehaviour
         if (inputs.RightMainTriggerDown)
         {
             pressedPiece = mine;
-            pressedPlateau = (mine == null && overLegal) ? hitPlateau : -1;
+            bool onGap = mine == null && overLegal;
+            pressedPlateau = onGap ? hitPlateau : -1;
+            pressedEdge = onGap ? hitCandidateEdge : -1;
         }
         else if (inputs.RightMainTriggerUp)
         {
@@ -401,11 +410,12 @@ public class PlateauSelection : MonoBehaviour
             }
             else if (pressedPlateau >= 0 && pressedPlateau == hitPlateau)
             {
-                Send(game, pressedPlateau);
+                Send(game, pressedPlateau, pressedEdge);
             }
 
             pressedPiece = null;
             pressedPlateau = -1;
+            pressedEdge = -1;
         }
     }
 
@@ -489,27 +499,57 @@ public class PlateauSelection : MonoBehaviour
         RecomputeLegal(PlateauGame.Instance);
     }
 
-    void Send(PlateauGame game, int destination)
+    /// <summary>
+    /// Commit the move. <paramref name="destinationEdge"/> is the bar the click landed on, or -1
+    /// when it landed on the plateau instead — bridges travel as a gap index, everything else as a
+    /// destination plateau.
+    /// </summary>
+    void Send(PlateauGame game, int destination, int destinationEdge)
     {
         if (Time.unscaledTime < sendLockUntil || selected == null)
         {
             return;
         }
+
+        bool isBridge = selected.IsPlacedBridge || (PieceKind)selected.kind == PieceKind.Bridge;
+        if (isBridge)
+        {
+            int movingEdge = selected.IsPlacedBridge ? selected.edge : -1;
+            int edge = destinationEdge;
+
+            // destinationEdge < 0 means the click landed on the plateau, not on one of its bars.
+            // Name the gap here rather than on the server: the client is the side that knows which
+            // bar was tinted, and resolving in one place means the two can never pick differently.
+            if (edge < 0 &&
+                (!game.TryBuildView(seat, movingEdge, out PlateauMoveRules.View view) ||
+                 !PlateauMoveRules.TryResolveBridgeEdge(view, destination, out edge)))
+            {
+                return;                      // deliberately BEFORE the lockout: a failed resolve is
+            }                                // not a move, and must not eat the player's next second
+
+            sendLockUntil = Time.unscaledTime + SendLockout;
+
+            // No local prediction — see the note below.
+            if (selected.IsPlacedBridge)
+            {
+                game.RequestMoveBridgeServerRpc(selected.edge, (byte)edge, armedEpoch);
+            }
+            else
+            {
+                game.RequestPlaceBridgeServerRpc(selected.plateau, (byte)edge, armedEpoch);
+            }
+
+            Cancel();
+            return;
+        }
+
         sendLockUntil = Time.unscaledTime + SendLockout;
 
         // No local prediction. This project only predicts state a client holds an exclusive
         // server-granted lock on (RoomAnchor.worldHolder); there is no such lock for a move, and a
         // piece that snaps back is worse than the tick of latency nobody notices.
-        if (selected.IsPlacedBridge)
-        {
-            game.RequestMoveBridgeServerRpc(selected.edge, (byte)destination, armedEpoch);
-        }
-        else
-        {
-            game.RequestMoveServerRpc(selected.plateau, selected.kind, (byte)count,
-                                      (byte)destination, armedEpoch);
-        }
-
+        game.RequestMoveServerRpc(selected.plateau, selected.kind, (byte)count,
+                                  (byte)destination, armedEpoch);
         Cancel();
     }
 
@@ -540,6 +580,7 @@ public class PlateauSelection : MonoBehaviour
         selected = null;
         pressedPiece = null;
         pressedPlateau = -1;
+        pressedEdge = -1;
         pressedIdlePlateau = -1;
         hoveredLegalPlateau = -1;
         detent = 0;
@@ -560,10 +601,12 @@ public class PlateauSelection : MonoBehaviour
             return;
         }
 
-        // Relocating a bridge computes the network as if that bridge were already lifted, so one at
-        // the end of a chain is not propping up its own legality.
-        int exclude = selected.IsPlacedBridge ? selected.edge : -1;
-        if (!game.TryBuildView(seat, exclude, out PlateauMoveRules.View view))
+        // Relocating a bridge seeds the network from the two plateaus that bridge currently spans,
+        // rather than from the central plateau. The bridge is NOT lifted out of the graph: the gap
+        // it sits in stays occupied, and everything on the far side of it stays in the system. See
+        // bridgeMovementUpdate.md.
+        int movingEdge = selected.IsPlacedBridge ? selected.edge : -1;
+        if (!game.TryBuildView(seat, movingEdge, out PlateauMoveRules.View view))
         {
             return;
         }
@@ -620,6 +663,9 @@ public class PlateauSelection : MonoBehaviour
     /// PlateauMoveRules.BridgeDestinations would have added to `legal` for this same edge. Resolves
     /// only when the edge is one of the already-cached candidates, so an occupied, unreachable or
     /// irrelevant spot is inert.
+    ///
+    /// This now only feeds the HIGHLIGHT: the destination actually sent is the edge itself, carried
+    /// as pressedEdge, so a mis-pick here can no longer put a bridge in the wrong gap.
     /// </summary>
     int ResolveBridgeSpotPlateau(PlateauGame game, int edge)
     {

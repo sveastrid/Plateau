@@ -41,6 +41,7 @@ public class PlateauSpawnMenu : MonoBehaviour
     PlateauTint backgroundTint;
     TextMeshPro scoreText;
     keyInfo pressedKey;
+    float leftGripTimer = 0f;
 
     /// <summary>True while the menu is active on the hand. Read by PlateauSelection.</summary>
     public bool IsOpen => menuInstance != null && menuInstance.activeSelf;
@@ -82,7 +83,20 @@ public class PlateauSpawnMenu : MonoBehaviour
 
         // "By itself": engaging the right grip too hands the gesture to WorldGrab instead, and
         // Menu1 already owns the right trigger while it is open, so this must not compete with it.
-        bool wantOpen = inputs.LeftGrip && !inputs.RightGrip && (menu == null || !menu.IsOpen);
+        bool isLeftGripHeld = inputs.LeftGrip && !inputs.RightGrip && (menu == null || !menu.IsOpen);
+
+        if (isLeftGripHeld)
+        {
+            leftGripTimer += Time.unscaledDeltaTime;
+        }
+        else
+        {
+            leftGripTimer = 0f;
+        }
+
+        // Wait 0.15s before opening to avoid flashing during the two-grip WorldGrab gesture
+        // where one grip is pressed or released slightly before the other.
+        bool wantOpen = leftGripTimer > 0.15f;
 
         if (wantOpen && !menuInstance.activeSelf)
         {

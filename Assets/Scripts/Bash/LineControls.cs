@@ -16,6 +16,14 @@ public class LineControls : MonoBehaviour
     public bool checkForCollisions = false;
     public ControlListener control;
 
+    /// <summary>
+    /// False for the movement half of a boat's or plane's turn: it still stops on a wall and still
+    /// drowns a surface craft on an island, it just does not take anybody else with it. Those two
+    /// pieces have already had their shot — the artillery arc. Sub and helicopter keep it true and
+    /// are unchanged in every respect.
+    /// </summary>
+    public bool killsPieces = true;
+
     private void Start()
     {
         GameObject go = GameObject.Find("Controls");
@@ -49,6 +57,14 @@ public class LineControls : MonoBehaviour
 
         if (other.gameObject.tag == "gamepiece")
         {
+            // Only this branch is gated. A harmless movement line still stops on a wall and still
+            // drowns on an island — otherwise a boat drives through a wall and a plane's harmless
+            // move becomes a way to park inside an island.
+            if (!killsPieces)
+            {
+                return;
+            }
+
             Transform parent = other.transform.parent;
             NetworkBaseControl victim = parent != null ? parent.GetComponent<NetworkBaseControl>() : null;
             if (victim != null)
@@ -58,23 +74,29 @@ public class LineControls : MonoBehaviour
         }
         else if (other.gameObject.tag == "obstacle")
         {
+            // Read the index BEFORE EndCannonLine: it deselects the piece now, so by the time
+            // KillPiece runs activeGamepiece is null and ActivePieceIndex() would answer -1 —
+            // silently turning off the one rule that punishes a bad shot.
+            int n = ActivePieceIndex();
             if (control != null)
             {
                 control.EndCannonLine();
             }
-            KillActivePiece();
+            KillPiece(n);
         }
         else if (other.gameObject.tag == "island")
         {
-            // Boats and subs are on the water; planes and helicopters are over it.
-            int activeGamepieceNum = ActivePieceIndex();
-            if (activeGamepieceNum == 0 || activeGamepieceNum == 2)
+            // Boats and subs are on the water; planes and helicopters are over it. Note this is a
+            // different half of the four pieces from the one that lobs a shell — see
+            // BashRoot.UsesArtillery.
+            int n = ActivePieceIndex();
+            if (BashRoot.IsSurfaceCraft(n))
             {
                 if (control != null)
                 {
                     control.EndCannonLine();
                 }
-                KillActivePiece();
+                KillPiece(n);
             }
         }
     }
@@ -88,10 +110,11 @@ public class LineControls : MonoBehaviour
         return myNetBaseControl.activeGamepiece.transform.GetSiblingIndex();
     }
 
-    void KillActivePiece()
+    /// <summary>Kill the piece this trail left from. Takes the index rather than reading it,
+    /// because the caller has to capture it before EndCannonLine deselects.</summary>
+    void KillPiece(int n)
     {
-        int n = ActivePieceIndex();
-        if (n < 0)
+        if (n < 0 || myNetBaseControl == null)
         {
             return;                     // already dead, or a second hit in the same frame
         }

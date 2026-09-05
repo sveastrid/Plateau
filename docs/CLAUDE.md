@@ -514,7 +514,8 @@ One place, used by the client to highlight and by the server to validate, so the
 | Troop | BFS over `(plateau, bridges spent ≤ 2)`, crossing only `bridged_s` |
 | Parshendi | BFS over `(plateau, jump spent)`: unlimited `bridged_s`, plus one `adj` hop |
 | Shardbearer | BFS over `(plateau, bridges ≤ 2, jump ≤ 1)`, both moves, any order |
-| Bridge | exactly one end inside the player's component (closure of the **central plateau** over their own bridges), the other end outside, and no bridge of anyone's already there — EXCEPT the free twin bar of a pair this player already bridged, both of whose ends now read as inside (`PlateauMoveRules.HasOwnBridgedTwin`) |
+| Bridge (from reserve) | exactly one end inside the closure of the **central plateau** over the player's own bridges, the other outside, and no bridge of anyone's already there — EXCEPT the free twin bar of a pair this player already bridged, both of whose ends now read as inside (`PlateauMoveRules.HasOwnBridgedTwin`) |
+| Bridge (already laid) | the same, but the closure is seeded from **that bridge's own two ends**, so it can only be re-laid around the plateau system it is touching. Its own pair is excluded |
 
 **At game start troops have zero legal destinations** — nobody has laid a bridge yet. That is the
 rules working, not a bug, which is why a selected troop with nowhere to go turns its count **red**
@@ -522,14 +523,24 @@ instead of doing nothing. Parshendi and shardbearers can jump to the six plateau
 
 Readings taken where the rules are ambiguous, all commented at their use site: bridges always mean
 *your own*; shardbearer's "two bridges" is *up to* two; the jump may be taken at any point in the
-move; the bridge network is seeded with the central plateau (without that seed no first bridge could
-ever be placed and the game deadlocks); one bridge per gap regardless of owner.
+move; the bridge network is seeded with the central plateau **for placement from reserve** (without
+that seed no first bridge could ever be placed and the game deadlocks) and with the moving bridge's
+**own two ends for a move** (a bridge is local to the plateau system it is touching — see
+[`bridgeMovementUpdate.md`](bridgeMovementUpdate.md)); one bridge per gap regardless of owner.
+`PlateauMoveRules.View.movingEdge` is the single switch between the two, and it does *not* lift the
+bridge out of the graph — the board is read as it stands.
 
-**A bridge is targeted by plateau, like everything else.** Every legal edge has exactly one end
-outside the player's component, so the far plateau names the gap; ties go to the lowest edge index
-on both client and server. While a bridge is selected every candidate bar is faintly tinted, and a
-hit on the bar itself resolves to that same far plateau (`PlateauSelection.ResolveBridgeSpotPlateau`,
-via each bar's `PlateauEdgeTag`) — the tint is a legitimate click target, not just a hint to aim past.
+**A bridge is targeted by gap, unlike everything else.** Both bridge RPCs
+(`RequestPlaceBridgeServerRpc`, `RequestMoveBridgeServerRpc`) carry an **edge index**, not a
+destination plateau: with a bridge's local system possibly in two detached halves, one plateau can
+be adjacent to it through two different free bars and a server-side re-derivation would sometimes
+pick the bar the player did not click. `PlateauSelection` resolves the gap client-side — from the
+bar that was hit, or via `TryResolveBridgeEdge` when the click landed on bare plateau — and the
+server re-checks that exact gap with `PlateauMoveRules.IsLegalBridgeEdge`, the same predicate the
+client highlighted from. While a bridge is selected every candidate bar is faintly tinted, and a hit
+on the bar itself resolves to the plateau it names (`PlateauSelection.ResolveBridgeSpotPlateau`, via
+each bar's `PlateauEdgeTag`) — the tint is a legitimate click target, not just a hint to aim past.
+`RequestMoveServerRpc` now refuses `PieceKind.Bridge` outright.
 
 ### Interaction — `PlateauSelection`
 
@@ -951,6 +962,7 @@ are marked applied, corrected, or out of scope — check the code before trustin
 | --- | --- |
 | [`plateauRules.md`](plateauRules.md) | The game's rules. Starting forces and movement are implemented; everything else is still the design target. It says 33 plateaus and the scene has 41 — the code counts children, so the doc is the stale one. |
 | [`BASHUpdate.md`](BASHUpdate.md) | **Applied.** The plan for porting BASH (`D:\Unity_Stuff\BASH_U6`) in as a third game: the GUID collisions a bulk copy would cause, the world-space → `World Root` local conversion its networking needs, and the scene to build. Its §14 records where the port ended up different from the plan. |
+| [`bridgeMovementUpdate.md`](bridgeMovementUpdate.md) | **Applied.** Re-laying a bridge that is already on the board: the local plateau system it may move around, why the search seed (not the graph) was the bug, and the switch of both bridge RPCs from a destination plateau to a gap index. Supersedes `bigFixes1.md` §4. |
 | [`anchoringUpdate.md`](anchoringUpdate.md) | One anchor per room, the `World Root` content frame, the two-grip world grab. |
 | [`fixAnchoring.md`](fixAnchoring.md) | Colocated alignment, the nametag and hand-cone defects, the two-cones-and-a-name avatar. |
 | [`updates1.md`](updates1.md) | Earlier pass — root causes and ordering. |

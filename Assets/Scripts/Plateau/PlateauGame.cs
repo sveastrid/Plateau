@@ -447,14 +447,18 @@ public class PlateauGame : NetworkBehaviour
     // ------------------------------------------------------------------ RPCs
 
     /// <summary>
-    /// Move <paramref name="count"/> pieces of one kind from one plateau to another. For a bridge
-    /// still in reserve, <paramref name="to"/> is the new plateau it should reach and the gap is
-    /// resolved from it; count is ignored (one bridge at a time).
+    /// Move <paramref name="count"/> pieces of one kind from one plateau to another. Bridges are NOT
+    /// moved through here — they target a gap, not a plateau, and have their own two RPCs below.
     /// </summary>
     [ServerRpc(RequireOwnership = false)]
     public void RequestMoveServerRpc(byte from, byte kind, byte count, byte to, int epoch,
                                      ServerRpcParams rpcParams = default)
     {
+        if (kind == (byte)PieceKind.Bridge)
+        {
+            return;
+        }
+
         if (!boardLive.Value || epoch != boardEpoch.Value)
         {
             return;                          // the board was reset between arming and sending
@@ -495,30 +499,63 @@ public class PlateauGame : NetworkBehaviour
             return;
         }
 
-        if ((PieceKind)kind == PieceKind.Bridge)
-        {
-            if (!PlateauMoveRules.TryResolveBridgeEdge(view, to, out int edge))
-            {
-                return;
-            }
-            RemovePieces(idx, 1);
-            placedBridges.Add(new PlacedBridge(edge, seat));
-            return;
-        }
-
         int n = Mathf.Clamp(count, 1, stacks[idx].count);
         RemovePieces(idx, n);
         AddPieces(to, seat, kind, n);
     }
 
     /// <summary>
-    /// Pick up a bridge that has already been laid and put it somewhere else — plateauRules.md's
-    /// "It must be repositioned to span from a plateau already connected by that player's bridges
-    /// to a new plateau". Legality is computed with this bridge already lifted, so a bridge at the
-    /// far end of a chain can be moved without its own presence propping up the component.
+    /// Lay a bridge from reserve across <paramref name="toEdge"/>. The network is seeded from the
+    /// central plateau — plateauRules.md's "a plateau already connected by that player's bridges",
+    /// with the centre as the seed because that is where a first bridge must come from.
     /// </summary>
     [ServerRpc(RequireOwnership = false)]
-    public void RequestMoveBridgeServerRpc(byte fromEdge, byte to, int epoch,
+    public void RequestPlaceBridgeServerRpc(byte fromPlateau, byte toEdge, int epoch,
+                                            ServerRpcParams rpcParams = default)
+    {
+        if (!boardLive.Value || epoch != boardEpoch.Value)
+        {
+            return;
+        }
+
+        PlateauBoard board = PlateauBoard.Instance;
+        if (board == null || !board.IsBaked || fromPlateau >= board.PlateauCount)
+        {
+            return;
+        }
+
+        int seat = SeatForClient(rpcParams.Receive.SenderClientId);
+        if (seat < 0)
+        {
+            return;
+        }
+
+        int idx = FindStack(fromPlateau, seat, (int)PieceKind.Bridge);
+        if (idx < 0)
+        {
+            return;                          // no bridge of the sender's in reserve there
+        }
+
+        if (!TryBuildView(seat, -1, out PlateauMoveRules.View view) ||
+            !PlateauMoveRules.IsLegalBridgeEdge(view, toEdge))
+        {
+            return;                          // the client's highlight is a hint; this is the rule
+        }
+
+        RemovePieces(idx, 1);
+        placedBridges.Add(new PlacedBridge(toEdge, seat));
+    }
+
+    /// <summary>
+    /// Pick up a bridge that has already been laid and put it in another gap. Legality is computed
+    /// with the network seeded from the two plateaus this bridge currently spans, so it can only be
+    /// re-laid around the plateau system it is actually touching. See bridgeMovementUpdate.md.
+    ///
+    /// toEdge == fromEdge needs no explicit guard: the bridge is still in anyBridge, so
+    /// IsCandidateEdge refuses its own gap, and the SamePair check refuses its twin bar.
+    /// </summary>
+    [ServerRpc(RequireOwnership = false)]
+    public void RequestMoveBridgeServerRpc(byte fromEdge, byte toEdge, int epoch,
                                            ServerRpcParams rpcParams = default)
     {
         if (!boardLive.Value || epoch != boardEpoch.Value)
@@ -527,7 +564,7 @@ public class PlateauGame : NetworkBehaviour
         }
 
         PlateauBoard board = PlateauBoard.Instance;
-        if (board == null || !board.IsBaked || to >= board.PlateauCount)
+        if (board == null || !board.IsBaked)
         {
             return;
         }
@@ -541,19 +578,16 @@ public class PlateauGame : NetworkBehaviour
         int existing = FindPlacedBridge(fromEdge);
         if (existing < 0 || placedBridges[existing].seat != seat)
         {
-            return;
+            return;                          // not the sender's bridge to move
         }
 
-        if (!TryBuildView(seat, fromEdge, out PlateauMoveRules.View view))
-        {
-            return;
-        }
-        if (!PlateauMoveRules.TryResolveBridgeEdge(view, to, out int edge))
+        if (!TryBuildView(seat, fromEdge, out PlateauMoveRules.View view) ||
+            !PlateauMoveRules.IsLegalBridgeEdge(view, toEdge))
         {
             return;
         }
 
-        placedBridges[existing] = new PlacedBridge(edge, seat);
+        placedBridges[existing] = new PlacedBridge(toEdge, seat);
     }
 
     /// <summary>
@@ -778,8 +812,13 @@ public class PlateauGame : NetworkBehaviour
     // ------------------------------------------------------------------ view for the rules
 
     /// <summary>
-    /// Assemble the board slice one seat's movement search needs. <paramref name="excludeEdge"/>
-    /// lifts one already-placed bridge out of the picture, for relocating it.
+    /// Assemble the board slice one seat's movement search needs. <paramref name="movingEdge"/> is
+    /// the edge a bridge is being lifted FROM, or -1 for every other move.
+    ///
+    /// It does NOT remove that bridge from the graph — the board is read as it stands, so the gap
+    /// the bridge is in stays flagged and is never offered back. All it does is move the seed of
+    /// PlateauMoveRules.ConnectedComponent onto that bridge's own two ends. See
+    /// bridgeMovementUpdate.md.
     ///
     /// Topology comes from the SERVER-PUBLISHED edge list, not from this client's own bake: the
     /// bake turns float geometry into integer indices through an argmin, and an Editor host and a
@@ -787,7 +826,7 @@ public class PlateauGame : NetworkBehaviour
     /// destinations the server refuses forever, with no error anywhere. Geometry stays local,
     /// where a sub-millimetre disagreement is invisible.
     /// </summary>
-    public bool TryBuildView(int seat, int excludeEdge, out PlateauMoveRules.View view)
+    public bool TryBuildView(int seat, int movingEdge, out PlateauMoveRules.View view)
     {
         view = default;
 
@@ -809,7 +848,7 @@ public class PlateauGame : NetworkBehaviour
         for (int i = 0; i < placedBridges.Count; i++)
         {
             PlacedBridge pb = placedBridges[i];
-            if (pb.edge >= edgeMirror.Count || pb.edge == excludeEdge)
+            if (pb.edge >= edgeMirror.Count)
             {
                 continue;
             }
@@ -828,6 +867,7 @@ public class PlateauGame : NetworkBehaviour
             anyBridge = anyFlags,
             plateauCount = board.PlateauCount,
             central = board.CentralPlateau,
+            movingEdge = movingEdge,          // never omit: View is a struct and its default is 0
         };
         return true;
     }

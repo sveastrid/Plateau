@@ -95,4 +95,49 @@ public class BashRoot : MonoBehaviour
         Vector3 v = f != null ? f.TransformDirection(local) : local;
         return v.sqrMagnitude > 0f ? v.normalized : v;
     }
+
+    // ------------------------------------------------------------------ the four gamepieces
+
+    // A piece's kind is its sibling index under its base, and that integer is already on the wire
+    // in every selection RPC. These are names for it, not a new concept.
+    public const int Boat = 0, Plane = 1, Sub = 2, Helicopter = 3;
+
+    /// <summary>
+    /// Boat and plane lob a shell before they move. Sub and helicopter shoot as they move.
+    ///
+    /// This is NOT the same pairing as IsSurfaceCraft below, and the two are one line apart on
+    /// purpose: same four indices, two different halves, and written as bare integer comparisons
+    /// they are indistinguishable at a glance and invite being "tidied" into agreement.
+    /// </summary>
+    public static bool UsesArtillery(int kind)
+    {
+        return kind == Boat || kind == Plane;
+    }
+
+    /// <summary>Boat and sub are on the water, so an island kills them. Plane and helicopter are
+    /// over it. See UsesArtillery for why this is spelled out rather than inlined.</summary>
+    public static bool IsSurfaceCraft(int kind)
+    {
+        return kind == Boat || kind == Sub;
+    }
+
+    /// <summary>
+    /// Rotate a board-local direction about board-local +Y, preserving its y component.
+    ///
+    /// This lives here rather than on ControlListener because two files now need it — the shot's
+    /// steering and NetworkBaseControl's spinning aim — and every client has to derive the same
+    /// heading from the same numbers. Two copies of a rotation helper that must agree exactly is
+    /// how the cannon dot ends up somewhere different on each headset.
+    /// </summary>
+    public static Vector3 RotateInXZ(Vector3 vector, float angleInDegrees)
+    {
+        float angleInRadians = Mathf.Deg2Rad * angleInDegrees;
+        float cos = Mathf.Cos(angleInRadians);
+        float sin = Mathf.Sin(angleInRadians);
+
+        float newX = vector.x * cos - vector.z * sin;
+        float newZ = vector.x * sin + vector.z * cos;
+
+        return new Vector3(newX, vector.y, newZ);   // preserve the y value
+    }
 }

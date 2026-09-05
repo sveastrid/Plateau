@@ -18,9 +18,12 @@ using System.Collections.Generic;
 ///    bizarre, and inconsistent with Troop's explicit "up to two".
 ///  - The one jump may be taken at any point, before or between bridge crossings. "plus one jump
 ///    per turn" reads as a budget, not an ordering.
-///  - A player's bridge network is seeded with the central plateau. With no bridges placed, nothing
-///    is "already connected by that player's bridges", so without the seed no first bridge could
-///    ever be placed and the game would deadlock on turn one.
+///  - "A plateau already connected by that player's bridges" is connected TO something, and which
+///    something depends on the move. Placing from reserve: the central plateau, because with no
+///    bridges placed nothing is connected to anything, so without that seed no first bridge could
+///    ever be placed and the game would deadlock on turn one. Moving a bridge already on the board:
+///    that bridge's own two ends, because a bridge is local to the plateau system it is touching.
+///    See View.movingEdge and ConnectedComponent, and bridgeMovementUpdate.md.
 /// </summary>
 public static class PlateauMoveRules
 {
@@ -40,13 +43,35 @@ public static class PlateauMoveRules
         public int plateauCount;
         public int central;
 
+        /// <summary>
+        /// The edge a bridge is being lifted FROM, or -1 when a bridge is being placed from reserve
+        /// (and for every non-bridge move). This is the ONLY thing that decides where the bridge
+        /// network is grown from — the moving bridge's own two ends, or the central plateau. See
+        /// ConnectedComponent.
+        ///
+        /// It does NOT remove the bridge from the graph: ownBridge and anyBridge still carry it, so
+        /// the gap it is in is never offered back as a destination.
+        ///
+        /// View is a struct, so default(View) leaves this 0 — a VALID edge index, meaning "edge 0 is
+        /// in hand". IsValid cannot catch that, because -1 and 0 are both legitimate. Every
+        /// construction site must set it explicitly; there is exactly one (PlateauGame.TryBuildView).
+        /// </summary>
+        public int movingEdge;
+
         public bool IsValid => edges != null && incidence != null && ownBridge != null &&
                                anyBridge != null && plateauCount > 0 &&
-                               central >= 0 && central < plateauCount;
+                               central >= 0 && central < plateauCount &&
+                               movingEdge >= -1;
     }
 
     static bool[] s_visited = new bool[0];
     static bool[] s_reached = new bool[0];
+    /// <summary>
+    /// Scratch for the bridge component. BridgeDestinations, CandidateBridgeEdges,
+    /// TryResolveBridgeEdge and IsLegalBridgeEdge each recompute the whole component into it before
+    /// reading it, so its contents are NEVER valid across a call boundary — do not cache a component
+    /// computed by one of them and read it after calling another.
+    /// </summary>
     static bool[] s_component = new bool[0];
     static int[] s_queue = new int[0];
 
@@ -170,16 +195,18 @@ public static class PlateauMoveRules
     /// plateauRules.md: a bridge "must be repositioned to span from a plateau already connected by
     /// that player's bridges to a new plateau."
     ///
-    /// So: exactly one end inside this player's connected component, and the gap must be free —
-    /// a Bridge Spot is a physical slot and two bridges cannot share it. Requiring the far end to
-    /// be OUTSIDE the component is what "to a new plateau" means, and it keeps each player's
-    /// network a tree rooted at the centre.
+    /// So: exactly one end inside the relevant connected component, and the gap must be free — a
+    /// Bridge Spot is a physical slot and two bridges cannot share it. Requiring the far end to be
+    /// OUTSIDE the component is what "to a new plateau" means.
     ///
     /// EXCEPT the twin bar of a pair this player has already bridged: both ends are then already
     /// inside the component, which the rule above would read as "nothing new" and drop — but the
     /// whole point of a duplicated pair (the six central connections) is that a second, still-empty
     /// bar to the SAME plateau is its own legal spot for that player's other bridge. See
     /// HasOwnBridgedTwin.
+    ///
+    /// WHICH component — rooted at the centre, or at the moving bridge's own two ends — is
+    /// View.movingEdge's job, not this method's. See ConnectedComponent.
     /// </summary>
     static void BridgeDestinations(in View v, List<int> results)
     {
@@ -188,36 +215,74 @@ public static class PlateauMoveRules
 
         for (int e = 0; e < v.edges.Count; e++)
         {
-            if (v.anyBridge[e])
+            if (!IsCandidateEdge(v, s_component, e))
             {
                 continue;
             }
-
-            int a = v.edges[e].a;
-            int b = v.edges[e].b;
-            if (a >= v.plateauCount || b >= v.plateauCount)
-            {
-                continue;
-            }
-
-            bool inA = s_component[a];
-            bool inB = s_component[b];
-            if (!inA && !inB)
-            {
-                continue;                       // neither end reachable yet
-            }
-            if (inA && inB && !HasOwnBridgedTwin(v, e))
-            {
-                continue;                       // both inside, and not the free twin of an owned bar
-            }
-
-            int far = inA && inB ? (a == v.central ? b : a) : (inA ? b : a);
+            int far = FarEnd(v, s_component, e);
             if (!results.Contains(far))
             {
                 results.Add(far);
             }
         }
     }
+
+    /// <summary>
+    /// Whether a bridge may be laid across gap <paramref name="e"/>, given a component already
+    /// computed into <paramref name="component"/>. The single statement of the bridge rule:
+    /// BridgeDestinations, CandidateBridgeEdges, TryResolveBridgeEdge and IsLegalBridgeEdge (which
+    /// is what the server validates with) all run this and nothing else, so there is one place to
+    /// change it and no way for two of them to disagree.
+    /// </summary>
+    static bool IsCandidateEdge(in View v, bool[] component, int e)
+    {
+        if (v.anyBridge[e])
+        {
+            return false;                       // one bridge per gap, whoever owns it
+        }
+
+        int a = v.edges[e].a;
+        int b = v.edges[e].b;
+        if (a >= v.plateauCount || b >= v.plateauCount)
+        {
+            return false;
+        }
+
+        // A bridge cannot slide sideways onto a bar spanning the pair it already spans. Its own bar
+        // is already excluded by anyBridge above; this is about the OTHER bar of a duplicated pair
+        // (the six central connections), which HasOwnBridgedTwin would otherwise offer as a legal
+        // spot — and moving a bridge onto its own twin bar connects nothing that was not already
+        // connected.
+        if (v.movingEdge >= 0 && v.movingEdge < v.edges.Count &&
+            SamePair(v.edges[e], v.edges[v.movingEdge]))
+        {
+            return false;
+        }
+
+        bool inA = component[a];
+        bool inB = component[b];
+        if (!inA && !inB)
+        {
+            return false;                       // neither end is in this bridge's local system
+        }
+        if (inA && inB && !HasOwnBridgedTwin(v, e))
+        {
+            return false;                       // both inside, and not the free twin of an owned bar
+        }
+        return true;
+    }
+
+    /// <summary>Which end of a candidate gap the player points at to name it.</summary>
+    static int FarEnd(in View v, bool[] component, int e)
+    {
+        int a = v.edges[e].a;
+        int b = v.edges[e].b;
+        return (component[a] && component[b]) ? (a == v.central ? b : a)     // twin bar
+                                              : (component[a] ? b : a);
+    }
+
+    /// <summary>BridgeEdge always stores a &lt; b, so an unordered pair is a two-field compare.</summary>
+    static bool SamePair(BridgeEdge x, BridgeEdge y) => x.a == y.a && x.b == y.b;
 
     /// <summary>
     /// True when some OTHER edge spanning the exact same pair of plateaus as <paramref name="edge"/>
@@ -234,8 +299,7 @@ public static class PlateauMoveRules
             {
                 continue;
             }
-            BridgeEdge other = v.edges[i];
-            if (other.a == e.a && other.b == e.b)
+            if (SamePair(v.edges[i], e))
             {
                 return true;
             }
@@ -244,8 +308,19 @@ public static class PlateauMoveRules
     }
 
     /// <summary>
-    /// Which plateaus this player has reached with their own bridges, seeded with the central
-    /// plateau because that is where everybody starts and where a first bridge must come from.
+    /// The plateaus this player has reached with their own bridges, from wherever the search is
+    /// seeded.
+    ///
+    /// Placing from reserve (movingEdge &lt; 0): seeded with the central plateau, because that is
+    /// where everybody starts and where a first bridge must come from — with no bridges placed,
+    /// nothing is "already connected by that player's bridges", so without the seed no first bridge
+    /// could ever be placed.
+    ///
+    /// Moving a bridge already on the board: seeded with that bridge's OWN two ends. A bridge is
+    /// local to the plateau system it is touching. Seeding both ends is what makes the far side of
+    /// the bridge count (so lifting the centre-most bridge no longer discards everything hanging off
+    /// it) and what stops a bridge in a detached piece of the network from being teleported back
+    /// onto the piece that still reaches the centre. See bridgeMovementUpdate.md §1.
     /// </summary>
     public static void ConnectedComponent(in View v, bool[] into)
     {
@@ -254,8 +329,17 @@ public static class PlateauMoveRules
 
         int head = 0;
         int tail = 0;
-        into[v.central] = true;
-        s_queue[tail++] = v.central;
+
+        if (v.movingEdge >= 0 && v.movingEdge < v.edges.Count)
+        {
+            BridgeEdge held = v.edges[v.movingEdge];
+            Seed(v, into, held.a, ref tail);
+            Seed(v, into, held.b, ref tail);
+        }
+        else
+        {
+            Seed(v, into, v.central, ref tail);
+        }
 
         while (head < tail)
         {
@@ -283,15 +367,25 @@ public static class PlateauMoveRules
     }
 
     /// <summary>
-    /// Which gap a bridge actually lands in, given the plateau the player pointed at.
-    ///
-    /// Every legal edge has exactly one end outside the player's component, so the far plateau
-    /// names the edge. Two legal edges can reach the same new plateau from two different connected
-    /// ones; the lowest edge index wins, deterministically, so the client that drew the highlight
-    /// and the server that validates it always agree.
-    ///
-    /// If newPlateau is already reached, the only legal edge is the free twin bar of a pair this
-    /// player has already bridged (HasOwnBridgedTwin) — same reasoning as BridgeDestinations.
+    /// Mark one starting plateau. s_queue still needs no more than plateauCount slots however many
+    /// seeds there are: a plateau already marked is refused, so each is enqueued at most once.
+    /// </summary>
+    static void Seed(in View v, bool[] into, int p, ref int tail)
+    {
+        if (p < 0 || p >= v.plateauCount || into[p])
+        {
+            return;
+        }
+        into[p] = true;
+        s_queue[tail++] = p;
+    }
+
+    /// <summary>
+    /// Which gap the player means, given the plateau they pointed at. The client's fallback when the
+    /// beam landed on a plateau rather than on a bar; a bar hit names its own gap directly and does
+    /// not come through here. Two candidate gaps can reach the same plateau from two different
+    /// plateaus in the system, and the lowest edge index wins — deterministic, so a re-resolve never
+    /// wanders.
     /// </summary>
     public static bool TryResolveBridgeEdge(in View v, int newPlateau, out int edge)
     {
@@ -304,8 +398,6 @@ public static class PlateauMoveRules
         EnsureSize(ref s_component, v.plateauCount);
         ConnectedComponent(v, s_component);
 
-        bool alreadyReached = s_component[newPlateau];
-
         List<int> at = v.incidence[newPlateau];
         if (at == null)
         {
@@ -315,16 +407,10 @@ public static class PlateauMoveRules
         for (int i = 0; i < at.Count; i++)
         {
             int e = at[i];
-            if (v.anyBridge[e])
-            {
-                continue;
-            }
-            int other = v.edges[e].Other(newPlateau);
-            if (other >= v.plateauCount || !s_component[other])
-            {
-                continue;
-            }
-            if (alreadyReached && !HasOwnBridgedTwin(v, e))
+            // The FarEnd clause is what makes this agree with BridgeDestinations exactly: a gap with
+            // one end in the system is named by its OUTSIDE end, so pointing at the inside end must
+            // not resolve it.
+            if (!IsCandidateEdge(v, s_component, e) || FarEnd(v, s_component, e) != newPlateau)
             {
                 continue;
             }
@@ -351,30 +437,27 @@ public static class PlateauMoveRules
 
         for (int e = 0; e < v.edges.Count; e++)
         {
-            if (v.anyBridge[e])
+            if (IsCandidateEdge(v, s_component, e))
             {
-                continue;
+                results.Add(e);
             }
-            int a = v.edges[e].a;
-            int b = v.edges[e].b;
-            if (a >= v.plateauCount || b >= v.plateauCount)
-            {
-                continue;
-            }
-
-            bool inA = s_component[a];
-            bool inB = s_component[b];
-            if (!inA && !inB)
-            {
-                continue;
-            }
-            if (inA && inB && !HasOwnBridgedTwin(v, e))
-            {
-                continue;
-            }
-
-            results.Add(e);
         }
+    }
+
+    /// <summary>
+    /// The server's check, and the reason a move can name a gap directly: given the edge the client
+    /// sent, is a bridge allowed there? Same predicate the client highlighted from.
+    /// </summary>
+    public static bool IsLegalBridgeEdge(in View v, int edge)
+    {
+        if (!v.IsValid || edge < 0 || edge >= v.edges.Count)
+        {
+            return false;
+        }
+
+        EnsureSize(ref s_component, v.plateauCount);
+        ConnectedComponent(v, s_component);
+        return IsCandidateEdge(v, s_component, edge);
     }
 
     static void EnsureSize(ref bool[] buffer, int size)

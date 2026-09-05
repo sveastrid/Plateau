@@ -58,7 +58,7 @@ Each piece may move **once per turn**.
 
 | Piece | Movement |
 |---|---|
-| **Bridge** | One bridge may be moved per turn. It must be repositioned to span from a plateau already connected by that player's bridges to a new plateau. |
+| **Bridge** | One bridge may be moved per turn. A bridge already on the board may be re-laid across any empty gap with one end in the group of plateaus it currently connects — that is, the plateaus reachable from either of its own ends over that player's bridges. A bridge placed from reserve is laid from the group connected to the central plateau. |
 | **Troop** | Crosses up to two bridges owned by that player per turn. |
 | **Parshendi** | Crosses as many bridges owned by that player as it wants, plus one jump per turn. |
 | **Shardbearer** | Crosses up to two bridges owned by that player plus one jump per turn. |

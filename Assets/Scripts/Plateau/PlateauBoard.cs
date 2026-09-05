@@ -443,6 +443,16 @@ public class PlateauBoard : MonoBehaviour
             }
             graphHash = h;
         }
+
+        // Edge indices travel as bytes on the wire (PlacedBridge.edge, both bridge RPCs' toEdge/
+        // fromEdge) and PlateauConst.NoIndex is 255, which PlateauPieceTag.edge uses as "not
+        // placed" — so index 255 is unusable and the board is capped at 255 edges. 81 bars today,
+        // so this is not live; the assert turns a bridge that silently refuses to move into a named
+        // failure the day somebody authors the 256th bar.
+        Debug.Assert(edges.Count < PlateauConst.NoIndex,
+                     "PlateauBoard: " + edges.Count + " edges, but edge indices are bytes and " +
+                     PlateauConst.NoIndex + " is reserved. Bridges on edge " + PlateauConst.NoIndex +
+                     " and above cannot be placed or moved.");
     }
 
     int NearestTile(Vector3 q, out float bestScore, out int second)
