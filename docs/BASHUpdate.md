@@ -8,7 +8,7 @@
 
 A plan, in the shape of the other docs in this folder: what BASH is, what it assumes, where those
 assumptions collide with this project, and the ordered work to resolve them. Read
-[`CLAUDE.md`](CLAUDE.md) first — especially [Adding a game], [The persistent rig] and
+[`CLAUDE.md`](../CLAUDE.md) first — especially [Adding a game], [The persistent rig] and
 [The content frame and the two-grip world grab]. This document is the BASH-specific delta on top of
 those four steps, and it is longer than four steps because BASH was written against the
 architecture this project had **before** `PersistentRig`, `World Root` and colocation existed.

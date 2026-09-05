@@ -124,9 +124,9 @@ Assets/
 │       ├── PlateauPalette.cs        # Per-seat color generation
 │       ├── PlateauTag.cs            # Plateau index tag for raycasting
 │       └── PointerBeam.cs           # Laser pointer raycast
+CLAUDE.md                            # Architecture guide — start here
 docs/
 ├── plateauRules.md                  # Full game rules
-├── CLAUDE.md                        # Architecture & rule notes
 ├── anchoringUpdate.md               # Spatial anchor implementation notes
 ├── fixAnchoring.md                  # Anchor troubleshooting
 └── updates1.md                      # Development log
@@ -209,7 +209,10 @@ Tools/
 | Document | Description |
 |---|---|
 | [`docs/plateauRules.md`](docs/plateauRules.md) | Complete game rules |
-| [`docs/CLAUDE.md`](docs/CLAUDE.md) | Architecture notes and design decisions |
+| [`CLAUDE.md`](CLAUDE.md) | **Architecture guide — start here.** Toolchain, build steps, session flow, and the conventions that break silently |
+| [`Assets/Scripts/CLAUDE.md`](Assets/Scripts/CLAUDE.md) | Shared platform: persistent rig, colocation, content frame, avatars, menus, input, passthrough |
+| [`Assets/Scripts/Plateau/CLAUDE.md`](Assets/Scripts/Plateau/CLAUDE.md) | The Plateau game (`ChasmGame`) |
+| [`Assets/Scripts/Bash/CLAUDE.md`](Assets/Scripts/Bash/CLAUDE.md) | The BASH game (`BashGame`) |
 | [`docs/anchoringUpdate.md`](docs/anchoringUpdate.md) | Meta Spatial Anchor implementation deep-dive |
 | [`docs/fixAnchoring.md`](docs/fixAnchoring.md) | Anchor troubleshooting notes |
 | [`docs/updates1.md`](docs/updates1.md) | Development log |

@@ -22,7 +22,7 @@ This document splits that verb in two.
 Both end by **deselecting the piece**, so nothing is left spinning on the board after a player has
 acted.
 
-Read [`CLAUDE.md`](CLAUDE.md)'s *The BASH game* first, and §5 of [`BASHUpdate.md`](BASHUpdate.md) —
+Read [`CLAUDE.md`](../CLAUDE.md)'s *The BASH game* first, and §5 of [`BASHUpdate.md`](BASHUpdate.md) —
 everything below is measured in `Bash Root`'s local space for the reason stated there, and getting
 that wrong is the failure this whole port was built to avoid.
 

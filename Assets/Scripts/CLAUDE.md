@@ -1,0 +1,479 @@
+# Shared systems — `Assets/Scripts/`
+
+The platform every game sits on: the persistent rig, colocation, the content frame and world
+grab, the player ring, avatar replication, menus, passthrough, input and in-headset debugging.
+
+Read the root [`CLAUDE.md`](../../CLAUDE.md) first. Nothing in this folder may reference a
+specific game — see [Adding a game](../../CLAUDE.md#adding-a-game).
+
+## Session flow
+
+1. `OpeningScene` loads. `RelayVivox.Start()` initializes Unity Services and signs in
+   anonymously, setting `servicesReady`; a failure here (a headset that came up with no network) is
+   caught and logged rather than vanishing into the `async void`. `MicPermissions` requests
+   `RECORD_AUDIO`.
+2. `GameController.Update()` reads whichever key the laser pointer is touching
+   (`pointerControl.currentLetter`) and commits it on right-trigger down — first a **room code**,
+   then a **username**.
+3. On the final Enter:
+   - **empty room code** → `RelayVivox.CreateRelay()` allocates a Relay slot for **12**, gets a
+     join code, `StartHost()`. This client is the **room owner**. `GameController` then calls
+     `GameSelector.LoadGameScene(GameRoutes.DefaultScene)` → `StairsGame`.
+   - **non-empty code** → `RelayVivox.JoinRelay()` → `StartClient()`. **No `LoadScene` here on
+     purpose** — Netcode synchronizes the joiner into whatever scene the room already has open. A
+     bad code throws `RelayServiceException`, caught in `GameController.TryToJoinRelayVivox()`,
+     which re-prompts through `ShowJoinFailed`. Both entry points take a `connectInFlight` latch,
+     and `pressedKey` is cleared on every press — without that, a second trigger pull during the
+     seconds before the joiner is pulled out of the lobby re-ran the whole join and the fresh
+     allocation invalidated the one already connecting.
+4. Vivox joins a group audio channel named after the room code.
+5. `NetworkManager.OnServerStarted` fires `BoardAnchor.HandleServerStarted`, which instantiates
+   `Room Anchor.prefab` and calls `Spawn(destroyWithScene: false)`.
+
+The **Network Manager** GameObject carries `NetworkManager`, `UnityTransport`, `RelayVivox`,
+`BoardAnchor` and `NetworkProbe`. Netcode marks it `DontDestroyOnLoad`, which is why `BoardAnchor`
+and `NetworkProbe` live there: both must outlive the scene switches below.
+
+**A join that fails after Relay accepted it is now visible.** `JoinAllocationAsync` succeeding only
+means the REST call worked — the transport handshake and Netcode's own handshake happen afterwards,
+and nothing used to watch them, so any failure past that point left the lobby on "Joining room…"
+for ever. `GameController` now subscribes `OnClientDisconnectCallback` and `OnTransportFailure`, and
+runs a `JoinTimeoutSeconds` (15 s) watchdog; all three land in one `ShowJoinFailed`, which returns
+the player to the room-code keyboard and calls `NetworkManager.Shutdown()` so the retry is not
+refused by an instance still grinding through `m_MaxConnectAttempts` (60 × 1000 ms). An empty
+`DisconnectReason` is reported as a probable build mismatch, because that is exactly what Netcode's
+config-hash refusal sends. See [`quest_networking_plan.md`](../../docs/quest_networking_plan.md).
+
+### Switching games
+
+`MenuControl` → `GameSelector.RequestGame(key)` → `RequestGameServerRpc` → the server validates
+the key against `GameRoutes` (**never** hand a client string to `LoadScene`) → 
+`NetworkManager.SceneManager.LoadScene(name, LoadSceneMode.Single)`. `EnableSceneManagement` is
+on, so every client follows and spawned `NetworkObject`s are carried across. **Clients must never
+call `UnityEngine.SceneManagement.SceneManager.LoadScene` while a session is running.**
+
+`LoadSceneMode.Single` destroys everything in the outgoing scene that is not itself
+`DontDestroyOnLoad` — which, now that `PersistentRig` exists, no longer includes the rig, the
+camera, the hands, the Input Reader or the Menu Manager. See
+[The persistent rig](#the-persistent-rig). Components still rebind around a switch, and every new
+component that caches a scene object should follow the same pattern, even though the object being
+re-found is now usually the very same instance as before:
+
+- `PlayerControls.BindToScene()` on `SceneManager.activeSceneChanged` — the `Player` prefab is not
+  part of `PersistentRig` (see Surviving objects, below), so this still has real work to do.
+- `BoardAnchor.HandleActiveSceneChanged()` clears its cached rig and Input Reader references and
+  re-`Find`s them next frame. Now a harmless no-op — same objects, never destroyed — kept so a
+  future scene that does not source its rig from `PersistentRig` still degrades safely.
+- `CameraController2.AdoptLocalPlayerSlot()` in `Start()`, for the case where the rig comes up
+  after the player object.
+
+Surviving objects: the Network Manager (and `BoardAnchor` with it), the `Player` prefabs, the
+`Room Anchor` object, the `GameObject` holding the bound `OVRSpatialAnchor` (`DontDestroyOnLoad`,
+so it is not re-downloaded and re-localized on every switch) — and now also **`PersistentRig`**:
+the rig, camera, hands, Input Reader and Menu Manager, one instance for the life of the app.
+
+## The persistent rig
+
+`Assets/Prefabs/PersistentRig.prefab` — `Directional Light`, `XRRig` (with `Camera Offset`, the
+hands, `SpawnMenu`), `Input Reader` and `Menu Manager` all under one root carrying
+`PersistentObject`, which self-`DontDestroyOnLoad`s in `Awake`. One instance lives in
+`OpeningScene`; no other scene has its own copy of any of it. Before this existed, each game scene
+baked its own full copy and `LoadSceneMode.Single` destroyed and rebuilt all of them on every
+switch — see [Switching games](#switching-games) for what still runs on that switch and why.
+
+**Resting position.** The prefab's own root transform is `(0, 0, -10)`, matching what
+`OpeningScene`'s and `GameScene`'s original local rigs were both hand-placed at (facing the
+keyboard / the menu, respectively). `CameraController2.PlaceAtRingSlot` repositions the rig at
+runtime for actual game scenes (`GameRoutes.IsGameScene` — `StairsGame`, `ChasmGame` and
+`BashGame`, i.e. every value in `GameRoutes.SceneByKey`), so the baked default only matters for the
+two scenes that never call it: `OpeningScene` and the legacy `GameScene`. Do not "fix" this position
+to somewhere sensible for a game scene — that breaks the lobby instead.
+
+**`gameObject.scene` is the fixed pseudo-scene `"DontDestroyOnLoad"` on every persisted object,
+forever.** Anything that used to read `gameObject.scene.name` to tell a game scene from the lobby
+(only `CameraController2.PlaceAtRingSlot` did) has to read `SceneManager.GetActiveScene().name`
+instead.
+
+**ChasmGame-specific exceptions**, because the shared prefab's authored defaults came from
+`StairsGame`:
+
+- `SpawnMenu` (the left-hand piece-buying menu) lives under the shared `Left Hand` even though only
+  `PlateauSpawnMenu` (ChasmGame-only) ever opens it — it has to live somewhere every scene shares,
+  and nothing in another scene references it, so its presence there is harmless.
+- `MenuControl.keepPointerAlwaysOn` is `false` on the shared instance (`StairsGame`'s authored
+  value — "the lobby and StairsGame keep the menu-only behaviour they were authored with").
+  `PlateauSpawnMenu.Bind()` opts ChasmGame in through `MenuControl.SetKeepPointerAlwaysOn(true)`
+  the moment it resolves `menu`, rather than changing the shared default and taking the other
+  scenes down with it.
+
+**The pointer's active state does not survive a scene switch on its own any more.**
+`MenuControl.OpenMenu1`/`CloseMenu` toggle it, and `MenuControl.ApplyPointerDefault` resets it to
+the incoming scene's default rather than trusting whatever the previous scene left behind. That
+reset hangs off **`SceneManager.activeSceneChanged`, not `Start()`** — `Menu Manager` is part of
+`PersistentRig` and therefore `DontDestroyOnLoad`, so its `Start()` runs exactly once for the life
+of the app, in `OpeningScene`, and could never reset anything for a game scene.
+
+Two consequences that have already caused bugs:
+
+- **`OpeningScene` does have a `MenuControl`** — it arrives with `PersistentRig`. `GameController`
+  is not the only thing writing the pointer's state there, so the two have to *agree* rather than
+  one winning: `GameController.Start()` switches the pointer on for the keyboard, and
+  `ApplyPointerDefault` returns `keepPointerAlwaysOn || !GameRoutes.IsGameScene(...)`, which is
+  true in the lobby. Unity gives no ordering guarantee between two `Start()` calls, and when these
+  two disagreed the pointer came up dead and no key on the lobby keyboard could be pressed.
+- **Never assign `keepPointerAlwaysOn` directly; call `SetKeepPointerAlwaysOn`.** The
+  `activeSceneChanged` reset has already run and switched the pointer off by the time any scene
+  component's first `Update` opts in, so a bare field write leaves the pointer dead until the
+  player opens and closes the menu. The setter applies the flag and re-evaluates in one call.
+  `PlateauSelection` reads the flag and does not write it.
+
+**`GameController` is the one place with direct, non-`Find` serialized references into the rig**
+(`inputs`, `rh`, `lh`, `pointer`) rather than the `Find`-by-name convention everything else here
+uses. That is a liability, not a model to copy: a rename anywhere in `PersistentRig` breaks
+`GameController` at the Inspector level with no runtime fallback, unlike every `Bind()`-style
+component under [Conventions that break silently](../../CLAUDE.md#conventions-that-break-silently).
+
+## Colocation — one anchor, every headset in the same real room
+
+This is the core of the project and the part most likely to be broken by an innocent change.
+
+**The idea.** The room owner presses *Place Anchor*. `BoardAnchor` creates an `OVRSpatialAnchor`
+at their feet, localizes it, saves it, shares it into a fresh group GUID, and publishes
+`(group, uuid)` onto `RoomAnchor`'s `NetworkVariable`s. Every other client polls those, downloads
+that exact UUID, localizes it, and binds. From then on each client moves **its own rig** every
+frame so the anchor lands on the world origin. World space is now the same physical frame on every
+headset, so every networked value in the project stays in plain world coordinates and needs no
+conversion.
+
+The anchor does **not** have to be where the board is. The board is placed separately with the
+world grab, and that placement is networked. Feet, not table — nothing to aim at, nothing to
+measure.
+
+**Alignment is continuous, not one-shot** (`CameraController2.AlignRigToAnchor`). The runtime
+recenters the tracking origin on its own and re-localizes anchors as the room map improves; each
+of those slides a one-shot alignment permanently out of the shared frame. The transform is
+idempotent by construction, so a frame in which nothing moved writes back the pose already there.
+It is **yaw-only** — pitch and roll from an anchor are noise, and applying them would tip the board
+off the real floor — but it *does* take the anchor's height, because each headset puts `y = 0` on
+its own floor estimate and those differ. A height disagreement past
+`MaxAnchorHeightDisagreement` **rejects the whole frame** rather than half-applying it.
+
+**That guard is `0.6 m`, and it is a tracking-failure bound — not a floor-calibration one.** It was
+`0.25 m`, which rejected the very case the height correction exists to fix: a headset that has never
+had Space Setup run is guessing the floor from whatever surface it last saw and can be half a metre
+out, and because the check re-runs and re-fails every frame such a headset **never aligned at all,
+not once**. The startup race the tight bound was really guarding against is now caught separately
+and directly, by asking `XROrigin.CurrentTrackingOriginMode` whether it has reached `Floor` yet —
+until it has, `Camera Offset` is not zeroed and every pose in `AlignRigToAnchor` is off by the
+serialized `CameraYOffset`. Both are driven by the same event, so "the mode reads Floor" and
+"`Camera Offset` has been zeroed" are one fact rather than two that could disagree. The rejection
+warning is rate-limited to one every `HeightWarningIntervalSeconds` (5) — at frame rate it was a log
+flood, and the interesting events are "it started" and "it stopped".
+
+> The serialized value wins over the initializer, so raising the default in `CameraController2.cs`
+> is **not enough on its own** — `PersistentRig.prefab` carries its own copy and that is what runs.
+> This is the same class of trap as [serialized-field renames](../../CLAUDE.md#conventions-that-break-silently).
+
+**What alignment switches off.** Once `CameraController2.LocalIsAligned` is true, joystick
+locomotion, snap-turn, recentring and the debug tilt all early-out (`CameraController2.cs:91-94`),
+and `ApplyRingAnchor` refuses to move the rig. A colocated player's position is a fact about the
+real room, not something to assign; involuntary rig moves in passthrough are nauseating. The flag
+is `static` because everything that cares — `PlayerControls`, `WorldGrab`, the probe — needs it
+without holding a reference to the rig at all; it predates `PersistentRig` and the reasoning still
+holds even though the rig itself no longer gets destroyed on a game switch.
+
+**Failure is survivable and honest.** A client that never binds still plays; it is simply a player
+in a different room. It keeps locomotion and the recentre button, and it still gets a ring slot.
+`A` (`BoardAnchor.RequestReAlign`) re-downloads and re-localizes; it releases the current binding
+first, because the SDK filters already-bound anchors out of query results and the retry would
+otherwise report a download failure that never happened.
+
+**Load requests are latched, never dropped** (`RequestLoad` / `PumpLoadsAsync`). A load can be in
+flight for a minute with retries and an 8-second localize timeout; a dropped request would leave
+one client bound to a stale anchor permanently with nothing to tell it otherwise.
+
+**A freshly published anchor is ignored coming back.** After publishing, `PollRoomAnchor` refuses
+to follow `RoomAnchor` until the server echoes the client's own UUID (15 s timeout). Until then
+what is on `RoomAnchor` is still the *previous* anchor, and following it would tear down the one
+just placed.
+
+### Execution-order contract
+
+Ten components carry `[DefaultExecutionOrder]` and the values are load-bearing. The whole chain
+exists to put everything that *reads* a world pose after everything that *writes* one:
+
+| Order | Component | Why |
+| --- | --- | --- |
+| **−10** | `PlateauBoard` | bakes the plateau table and the adjacency graph before anything reads them. Also idempotent via `EnsureBaked()`, because `PlateauGame`'s server tick can arrive in the same frame as the scene load |
+| (default 0) | `CameraController2` | locomotion, recentre, and the per-frame alignment to the room anchor |
+| **10** | `BoardAnchor` | must run **after** `OVRSpatialAnchor.Update()` refreshes the anchor's world pose; reading it earlier gets last frame's rig baked in |
+| **15** | `RoomContent` | applies the shared board pose to `World Root` in this frame's aligned frame |
+| **20** | `PlayerControls`, `WorldGrab` | sample head/hand world poses **after** the rig has moved; at order 0 every pose broadcast is a frame stale (~13 ms at 72 Hz) on top of network latency |
+| **23** | `PlateauSpawnMenu` | so `IsOpenOrOpening` is up to date before `PlateauSelection` reads it. Ordering is no longer what protects the selection — `IsOpenOrOpening` is, because the 0.15 s open debounce leaves the menu "closed" for ~10 frames after the grip goes down |
+| **24** | `PointerBeam` | one `Physics.SyncTransforms()` + one raycast, after the rig and the board have both settled |
+| **25** | `PlateauSelection`, `PlateauChooser`, `ControlListener` | all three consume the hit `PointerBeam` produced this same frame. They are peers and none depends on the others — `PlateauChooser` and `PlateauSelection` are both ChasmGame, `ControlListener` is BASH |
+| **30** | `PlateauPieceView` | reconciles pieces; its `LateUpdate` billboard needs the final `World Root` pose |
+
+## The content frame and the two-grip world grab
+
+`World Root` is the content frame. **Everything the game owns hangs under it and nothing a player
+owns does** — which is what makes "move and resize everything except the players" structural
+rather than a filter. `RoomContent` (on `World Root`) applies `RoomAnchor.contentPos/Yaw/Scale`
+each frame with an 80 ms first-order filter, and snaps rather than glides on the first frame so a
+joiner or a freshly loaded scene is already correct.
+
+The gesture (`WorldGrab`, on `XRRig`) is: **both grips** → move, turn and resize the board.
+
+- Yaw is **accumulated from per-frame deltas**, not from a single `theta - theta0`. `atan2` wraps
+  at ±180°, which would spin the board a full turn at the seam and cap the gesture at half a
+  revolution. Frames where the hands are stacked vertically contribute nothing (the axis has no
+  yaw there) — a pause in the turn rather than a spin.
+- Scale is the **clamped** span ratio. Using the raw ratio makes the board slide out from under
+  your hands once it hits a limit while appearing stationary in size. Bounds are
+  `RoomAnchor.MinScale`/`MaxScale` (0.15 – 4), enforced server-side too.
+- The pose applied is a proper similarity transform mapping `startCenter → center`. Naive
+  `startPos + (center - startCenter)` drags the board sideways whenever its origin is not exactly
+  under your hands, which it never is.
+- Scaling `World Root` and never the rig is deliberate: scaling the rig drags the user's tracked
+  hands away from the real hands they can see through passthrough.
+
+**The lock.** `RoomAnchor.worldHolder` is a server-written client id, `NoHolder = ulong.MaxValue`
+(not `0` — that is the host). First to squeeze both grips wins until they let go. Without it, two
+players gesturing at once each stream a pose from their own hands and the board oscillates at the
+tick rate. Details that matter:
+
+- The holder drives `RoomContent.ApplyImmediate` at frame rate locally and sends at `SendHz` (20);
+  everybody else smooths what arrives.
+- On release, `Commit()` sends one unconditional final pose before the lock is dropped — RPCs from
+  one sender are reliable-sequenced, so the server applies it before clearing the lock.
+- `Cancel()` releases on `claimSent`, **not** on `LocalHoldsWorld`, so letting go mid-round-trip
+  cannot leave the server granting a lock nobody is using.
+- `OnDisable` cancels. This existed because a game switch used to destroy the rig mid-gesture;
+  since `PersistentRig` the rig is never destroyed or disabled by a switch, so **this path no
+  longer fires on a game switch** — only on the component's own actual disable/destroy (e.g. Play
+  mode stopping). A lock held into a `LoadSceneMode.Single` switch is not released by this any
+  more. Not yet hit in practice — the server-side release below is the remaining safety net — but
+  worth an explicit release on scene switch if it turns out to matter.
+- The server clears the lock on `OnClientDisconnectCallback`.
+
+## Where players stand — `PlayerRing`
+
+A static ring of **12** slots (matching the Relay allocation of 12) at radius 2 m, centred on the
+world origin, all at `y = 0`. Slot 0 is on the −Z side.
+
+The server assigns a slot once in `PlayerControls.OnNetworkSpawn` via
+`PlayerRing.PickFreeSlot(OccupiedSlots())` — the middle of the widest empty stretch, so one player
+is at 0, the second opposite, the third and fourth on the quarters. **It never re-spaces players
+who are already there**; teleporting somebody because a third player joined is exactly the
+involuntary rig move that makes people sick. Occupancy is read from live players rather than a
+static, so a slot cannot leak on an ungraceful disconnect.
+
+Nothing about the ring is networked and it never moves the shared world — a slot is only ever the
+anchor for *this client's* rig (`CameraController2.PlaceAtRingSlot`), and it is skipped entirely
+in the lobby (`GameRoutes.IsGameScene`) and for colocated players.
+
+**Adding a game should mean putting its board at the origin and nothing else.** If a board needs
+more room, change `PlayerRing.Radius` rather than moving boards per scene.
+
+## Avatar replication
+
+`Player.prefab` (the `NetworkManager`'s player prefab, auto-spawned per client) carries
+`PlayerControls`, `GameSelector` and `ClientNetworkTransform` (a `NetworkTransform` with
+`OnIsServerAuthoritative() => false`). Children, resolved **by name** in `OnNetworkSpawn`:
+`PlayerLeft`, `PlayerRight`, `mainFace`, `tornado`, and **`TagsRoot`** — which holds the three
+labels, found beneath it rather than on the root: `Username`, `ScoreTag`, `Gemheart`.
+
+**The labels hang off `TagsRoot` and are laid out in the prefab**, not offset by constants in code.
+`Update()` puts `TagsRoot` itself above the head (`FaceBelowEyes + NameTagAboveEyes`, 0.36 + 0.28)
+and billboards it; everything below it keeps its authored local offset, so the spacing is visible in
+the Scene view instead of being a number in a script that nothing reads. `ScoreTagBelowName` used to
+exist for that and is gone. There is a fallback to finding `Username`/`ScoreTag` on the root when
+`TagsRoot` is missing, so an older prefab degrades rather than throwing.
+
+> The reparent that created `TagsRoot` is worth knowing about: done in the Editor it kept Unity's
+> world-position-preserving offsets, and every label ended up **6.5 m** from its root along the view
+> axis — present, correct, and nowhere near the player. See `bugFixes2.md` §2.
+
+- `ScoreTag` shows that seat's `PlateauGame.gemheartScores` entry, and only while a Plateau game is
+  actually live. Like the nametag it is visible to everyone *except* its owner, because
+  `OnNetworkSpawn` deactivates every child of your own avatar.
+
+- **A remote player is two cones and a name.** `ShowRemoteHeadAndBody` is `false`: in passthrough
+  their real head and body are already there, and a virtual copy is at best noise and at worst
+  drawn where they are not. The head is `SetActive(false)`, not deleted, because `Update()`
+  dereferences it unguarded every frame.
+- Your own avatar's children are all disabled locally — you are inside it.
+- Hands go on the wire as **position + `Quaternion`**, not position + forward. Rebuilding a
+  rotation with `LookRotation` discards roll and is ill-conditioned near vertical — and pointing a
+  controller straight down at a board is the default posture here, not an edge case.
+- The nametag is derived from the **head pose**, not from a fixed height above the avatar root.
+  The old fixed 1.43 m rendered across the face of anyone 1.45 m at eye height or taller.
+  `FaceBelowEyes` (0.36) is the mesh-pivot-to-eye offset and is used in both directions, so it
+  exists once rather than as the same magic number in two places. `NameTagAboveEyes` (0.28) has to
+  clear the top of a **real** head seen through passthrough, not the virtual one — which is never
+  drawn.
+- Remote poses are smoothed with a frame-rate-independent exponential lerp (`RemoteSmoothTime`
+  0.06 s). `NetworkVariable` delivers at the 30 Hz tick and the headset renders at 72–90, so raw
+  assignment makes the cones step. A player who has just spawned **snaps** rather than gliding in
+  from the origin. The face *value* is smoothed once and drives both the head and the tag, so the
+  two cannot diverge.
+- `playerName` is a `FixedString32Bytes` (29 bytes of UTF-8) and is clamped before the ServerRpc —
+  the lobby keyboard has no length limit, and an over-long name would throw *on the server* and
+  take the name down for everybody.
+
+## Menus, pointer, keys
+
+`MenuControl` (on `Menu Manager`, one shared instance on `PersistentRig` — see
+[The persistent rig](#the-persistent-rig)). **`X` opens and closes** the menu, which is
+instantiated 1.3 m in front of the camera and 0.7 m to the left. The laser pointer plus the right
+trigger picks a key: pressed on trigger **down**, acted on trigger **up**, so sliding off a key
+cancels it.
+
+Keys are dispatched by **`keyInfo.keyName` string**, never by child index. (The menu this replaced
+resolved widgets with `GetChild(0).GetChild(9).GetChild(13)`, so re-skinning the prefab broke it
+with no compile error.) `pointerControl` reports `keyName`, not the visible label.
+
+`Menu1.prefab` holds seven keys — **`Stairs`**, **`Chasms`**, **`BASH`**, **`Place Anchor`**,
+**`Reset Game`**, **`Random Islands`**, **`Voice Chat`**. `Menu2.prefab` holds the other six: the
+same list without `Voice Chat`, which is host-only. `OpenMenu1` picks between the two prefabs.
+
+This is **`Menu1`, the room menu — not `SpawnMenu`**, the per-player piece menu on the left wrist,
+which is a separate prefab with its own key set and its own dispatcher
+(`PlateauSpawnMenu.HandleKey`). See [The spawn menu](Plateau/CLAUDE.md#the-spawn-menu--plateauspawnmenu).
+
+**Not every key shows in every scene.** `MenuControl.KeyScene` names the keys that belong to one
+game, and `ApplySceneKeyFilter` deactivates the rest on the menu instance as it is opened — which
+is why a game's keys cost one row in that dictionary rather than a third menu prefab to keep in
+step with the other two. Today only BASH's `Reset Game` and `Random Islands` are scoped; the five
+original keys are meaningful everywhere. The `HandleKey` cases still log-and-no-op when their
+target is missing, so the filter is a tidiness measure, not the guard.
+
+One key is still one-sided: **`Passthrough`**. `HandleKey` handles it, but no such key exists in
+either prefab (the Editor command that added it, `AddPassthroughMenuKey.cs`, was deleted) — the
+handler is live and unreachable.
+
+An unknown key is deliberately inert and logs.
+
+`pointerControl` fires on trigger colliders tagged **`key`** and stretches the visible beam to the
+hit — but in a game scene `PointerBeam` overwrites the beam length absolutely every frame, and
+`MenuControl.keepPointerAlwaysOn` (opted into by `PlateauSpawnMenu.Bind()`, ChasmGame only) leaves
+the pointer switched on outside the menu. See [The pointer](Plateau/CLAUDE.md#the-pointer) and
+[The persistent rig](#the-persistent-rig).
+
+`GrabControl` (on `Left Grabber` / `Right Grabber`) tracks colliders tagged **`Grabbable`**;
+nothing is tagged that today, so `WorldGrab.CanStart`'s "two grips with a piece in hand is a piece
+grab, not a world grab" check is currently always false — it is there so it does not have to be
+retrofitted the day the first piece becomes grabbable.
+
+## Passthrough
+
+`PassthroughController` on `XRRig`. Passthrough on Quest is a **compositor layer owned by the Meta
+runtime**, not a render feature: the app must submit a frame whose background pixels have
+**alpha = 0**, and the runtime composites the camera feed underneath. Deleting the skybox alone
+gives you a black background with no error message. Four things had to be true and all four are
+currently applied — **do not regress any of them**:
+
+1. `Main Camera`: `m_ClearFlags: 2` (Solid Color), background `(0,0,0,0)`,
+   **`m_RenderPostProcessing: 0`**. URP's post stack writes opaque alpha into the final target and
+   is the single most common cause of "I followed the tutorial and it is still black".
+2. `m_SupportsHDR: 0` on **all three** URP quality assets. HDR on mobile selects
+   `R11G11B10_UFloat`, which has **no alpha channel**.
+3. `OVRPassthroughLayer.overlayType = Underlay` (Overlay draws the feed on top of everything).
+4. `m_SkyboxMaterial: {fileID: 0}` in every scene. `m_AmbientMode` is `3` (flat colour) in all of
+   them, so removing the skybox does **not** change the lighting — if something looks different
+   after a change here, the cause is elsewhere.
+
+`Assets/Materials/Space.mat` is kept, not deleted, so VR mode is still reachable
+(`vrSkybox` on the controller). The on/off state is `static`, so a choice made in the lobby
+survives the load into the game. It is deliberately **not** a `NetworkVariable` — passthrough is a
+per-user comfort setting like brightness, and one player switching to VR must not drag the room
+with them.
+
+The controller also owns **Guardian suppression**, because Meta requires the two to move together:
+in full-VR mode the player cannot see the real room, so the boundary is the only thing keeping
+them off the furniture and it must come back. Suppression needs all three of
+`OVRManager.shouldBoundaryVisibilityBeSuppressed`, `boundaryVisibilitySupport` in `OVRProjectConfig`
+(written by `MRPassthroughSetup`), and `com.oculus.permission.BOUNDARY_VISIBILITY` in the manifest.
+Missing any one and the runtime refuses silently.
+
+`EnsureOvrComponents()` will add a missing `OVRManager` or `OVRPassthroughLayer` at runtime, but
+wiring them in the scene is preferred — Meta's Project Setup Tool only validates components it can
+find in the scene.
+
+## Input
+
+`InputReader` (on `Input Reader`, one shared instance on `PersistentRig`) polls
+`UnityEngine.XR.InputDevices` every frame
+and republishes everything as plain public fields: level (`ButtonA`), edge-down (`ButtonADown`),
+edge-up (`ButtonAUp`), and analogue values. Two things to know:
+
+- Device queries filter on `Controller | Left`/`Right`. Asking for bare `Right` also matches a
+  tracked right *hand*, so enabling hand tracking alongside controllers used to push the match
+  count to 2 and silently kill all right-hand input.
+- Each hand independently falls back to the keyboard when its controller is absent.
+- `*Down` flags are one-shot edges. Held gestures must read levels — `WorldGrab` reads
+  `LeftGrip && RightGrip`, not the `Down` flags.
+
+Control map as it stands:
+
+| Input | Effect |
+| --- | --- |
+| Right trigger | select a menu / keyboard key; in Chasms, select a piece or a destination plateau or spin the chooser; in BASH, select one of your gamepieces |
+| Left trigger | BASH only: fire — lob the arc, then commit the spin-aimed movement line |
+| `X` | open / close the menu |
+| `A` | re-align to the room anchor (`BoardAnchor.RequestReAlign`) |
+| `B` | cancel the current piece selection (Chasms) |
+| **Left grip alone** | Chasms: open the personal spawn menu (`PlateauSpawnMenu`), held — releasing it, adding the right grip, or opening `Menu1` closes it |
+| Both grips | world grab — move, turn, resize the board |
+| Left joystick | move and snap-turn — **only when not colocated and not world-grabbing** |
+| Left joystick click | recentre the rig on the ring slot |
+| Right joystick | Chasms: up/down sets how many pieces to move. BASH: aims the artillery arc |
+| Right joystick click | clear the in-headset debug log |
+| `M` / `N` | tilt the rig (Editor debugging) |
+
+`Y` is read nowhere. The **left grip on its own is now meaningful** (the spawn menu), so it is no
+longer true that only the pair matters — which is exactly why `PlateauSelection` and
+`ControlListener` both stand down when *either* grip is merely held, rather than waiting for
+`WorldGrab.IsActive`. Note `rightJoystick.x` is **not** read in Chasms and should stay that way:
+its Editor keyboard fallback is bound to `A`/`D` (`InputManager.asset`) and `A` is re-align, so a
+horizontal nudge in the Editor would also re-align the rig.
+
+## Debugging in the headset
+
+`DebugLog` (on `Debugger`, a child of `XRRig`) mirrors `Application.logMessageReceived` into a
+10-line TextMeshPro box and appends the Relay room code. `Debug.Log` from anywhere lands there —
+no adb, no extra UI. Right joystick click clears it. (It used to be the *left* click, which meant
+every recentre wiped the log you were reading to find out why you recentred.)
+
+`ColocationProbe` (on `XRRig`) prints one line a second. **It is currently `m_Enabled: 1` on
+`PersistentRig.prefab`, i.e. running in every build** — its own class comment says to delete the
+component once the numbers are known, and that has not happened. Practical consequence: at 1 Hz it
+refills the ten-line box every ten seconds, so **turn it off before debugging anything else**,
+`NetworkProbe`'s connection events included. It prints:
+rig/head height, `aligned`, `anchored`, `tracked`, the short UUID, the count of system-initiated
+recenters, the content scale, the lock holder, and every remote player's head/hand height. Its
+class comment is a read-it-like-this guide; the short version:
+
+- recenters ticks **and the cones move** → no shared frame
+- recenters ticks **and nothing moves** → alignment works; this is the acceptance test
+- differing `uuid` on two headsets → they are on different anchors
+- `head.y ≈ 1.36` or `≈ 2.7` on a standing adult → `Camera Offset` was never zeroed; nothing else
+  means anything until this clears
+
+Take a baseline before changing anything in this area.
+
+`NetworkProbe` (on **`Network Manager`**, not the rig — Netcode marks that object
+`DontDestroyOnLoad`, so the probe is still listening after a game switch, which is exactly when a
+late disconnect shows up) logs every connection event: `connected as client`, `peer JOINED` /
+`peer LEFT`, `connection LOST` with `NetworkManager.DisconnectReason`, and `transport FAILURE`.
+Before it existed, `StartHost`/`StartClient`'s return values were discarded and nothing subscribed
+to any connection callback, so a client whose connection died *after* Netcode had synchronized it
+into the host's scene was indistinguishable from a client that was connected and alone.
+
+- **A `connection LOST` with an empty reason is Netcode's config-hash refusal**
+  (`ForceSamePrefabs`), which sends no reason string. Compare `prefabs=` on the two devices.
+- `LogHeartbeat` (off by default) adds one state line per second — `connected`, `clients`, `scene`,
+  `prefabs`, `player`. It is off because the debug box holds ten lines and a 1 Hz heartbeat scrolls
+  the events worth reading out of it.
+
+`VisibleWhenLooking` on `InfoBlock` shows the room code when the player looks at it.

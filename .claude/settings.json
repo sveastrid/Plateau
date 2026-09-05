@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(./Library/**)",
+      "Read(./Temp/**)",
+      "Read(./obj/**)",
+      "Read(./build/**)",
+      "Read(./.utmp/**)",
+      "Read(./.vs/**)",
+      "Read(./Logs/**)",
+      "Read(./.tools/**)",
+      "Read(./UserSettings/**)",
+      "Read(./*_BurstDebugInformation_DoNotShip/**)"
+    ]
+  }
+}
