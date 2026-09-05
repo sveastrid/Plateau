@@ -1,0 +1,37 @@
+<size=150%><b>BASH - Official Game Rules</b></size>
+
+<size=120%><b>🎯 Objective</b></size>
+Survival is the name of the game. The <b>last player remaining with an undestroyed piece</b> is the winner!
+
+<color=#ffffff55>────────────────────────────────────────</color>
+
+<size=120%><b>🎮 Controls & Turn Mechanics</b></size>
+• <b>Action/Attack:</b> Hold the <b>Left Trigger</b> to initiate your piece's attack (either firing a projectile or executing a ramming maneuver).
+• <b>Steer Projectile:</b> Use the <b>Right Joystick</b> to adjust your path mid-flight (whether shooting a missile, ramming, or moving).
+• <b>Defenseless Targets:</b> There are no defensive mechanics. Opponents remain stationary during your turn while you execute your attack.
+
+<color=#ffffff55>────────────────────────────────────────</color>
+
+<size=120%><b>♟️ The Pieces: Abilities & Movement</b></size>
+
+Each piece has a unique way of moving, attacking, and navigating the map. 
+
+<size=110%><b>🛥️ Boat</b></size>
+• <b>Turn Sequence:</b> Fires an arcing shot <b>first</b>, and then moves.
+• <b>Combat:</b> To destroy an opponent, your arcing shot <i>must</i> land directly on them. Ramming or bumping into an opponent during your movement phase does nothing.
+• <b>Navigation:</b> <b>Cannot</b> move onto islands. <b>Cannot</b> move through or hit walls and bases.
+
+<size=110%><b>✈️ Airplane</b></size>
+• <b>Turn Sequence:</b> Fires an arcing shot <b>first</b>, and then moves.
+• <b>Combat:</b> Just like the boat, your arcing shot <i>must</i> land directly on an opponent to destroy them. You cannot destroy opponents by crashing into them during movement.
+• <b>Navigation:</b> <b>Can</b> move onto and fly over islands. <b>Cannot</b> move through walls or bases.
+
+<size=110%><b>⛴️ Submarine</b></size>
+• <b>Turn Sequence:</b> Moves and attacks simultaneously in a single turn. 
+• <b>Combat:</b> Ramming only! It does not fire projectiles. If your movement path goes directly through an opponent, they are instantly destroyed.
+• <b>Navigation:</b> <b>Cannot</b> move through islands, walls, or bases.
+
+<size=110%><b>🚁 Helicopter</b></size>
+• <b>Turn Sequence:</b> Moves and attacks simultaneously in a single turn.
+• <b>Combat:</b> Ramming only! Like the Submarine, it does not fire projectiles. You must move directly through an opponent to destroy them.
+• <b>Navigation:</b> <b>Can</b> move freely over and through islands. <b>Cannot</b> move through walls or bases.

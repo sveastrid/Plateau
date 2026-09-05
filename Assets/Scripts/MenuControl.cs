@@ -145,7 +145,7 @@ public class MenuControl : MonoBehaviour
         {
             if (currentMenu == null)
             {
-                OpenMenu1();
+                OpenMenu1(true);
             }
             else
             {
@@ -283,7 +283,7 @@ public class MenuControl : MonoBehaviour
         selector.RequestGame(gameKey);
     }
 
-    public void OpenMenu1()
+    public void OpenMenu1(bool showRules = false)
     {
         // The host gets the menu with the Voice Chat key; everybody else gets the one without it.
         // If the local player cannot be resolved yet — it arrives a moment after a scene switch —
@@ -311,6 +311,90 @@ public class MenuControl : MonoBehaviour
         currentMenu = Instantiate(prefab, myCam.position + menuDistance * myCam.forward.normalized, Quaternion.identity);
         currentMenu.transform.rotation = myCam.rotation;
         currentMenu.transform.position += -menuLeftOffset * currentMenu.transform.right;
+
+        if (showRules)
+        {
+            // Dynamically generate the Rules panel
+            GameObject rulesCanvasGo = new GameObject("RulesCanvas");
+            rulesCanvasGo.transform.SetParent(currentMenu.transform, false);
+            rulesCanvasGo.transform.localPosition = new Vector3(2.5f, 0, 0); // Offset to the right of the menu
+            rulesCanvasGo.transform.localRotation = Quaternion.identity;
+
+            Canvas canvas = rulesCanvasGo.AddComponent<Canvas>();
+            canvas.renderMode = RenderMode.WorldSpace;
+            RectTransform canvasRt = rulesCanvasGo.GetComponent<RectTransform>();
+            canvasRt.sizeDelta = new Vector2(800, 800);
+            canvasRt.localScale = new Vector3(0.002f, 0.002f, 0.002f);
+            
+            // Add a dark background image so the text is readable
+            UnityEngine.UI.Image bgImage = rulesCanvasGo.AddComponent<UnityEngine.UI.Image>();
+            bgImage.color = new Color(0, 0, 0, 0.85f);
+
+            GameObject viewportGo = new GameObject("Viewport");
+            viewportGo.transform.SetParent(rulesCanvasGo.transform, false);
+            RectTransform viewportRt = viewportGo.AddComponent<RectTransform>();
+            viewportRt.anchorMin = Vector2.zero;
+            viewportRt.anchorMax = Vector2.one;
+            viewportRt.sizeDelta = Vector2.zero;
+            viewportRt.pivot = new Vector2(0.5f, 0.5f);
+            
+            viewportGo.AddComponent<UnityEngine.UI.RectMask2D>();
+
+            GameObject contentGo = new GameObject("Content");
+            contentGo.transform.SetParent(viewportGo.transform, false);
+            RectTransform contentRt = contentGo.AddComponent<RectTransform>();
+            contentRt.anchorMin = new Vector2(0, 1);
+            contentRt.anchorMax = new Vector2(1, 1);
+            contentRt.pivot = new Vector2(0.5f, 1);
+            contentRt.sizeDelta = new Vector2(0, 2000);
+            contentRt.anchoredPosition = Vector2.zero;
+
+            TMPro.TextMeshProUGUI text = contentGo.AddComponent<TMPro.TextMeshProUGUI>();
+            text.fontSize = 24;
+            text.color = Color.white;
+            text.margin = new Vector4(20, 20, 20, 20);
+            
+            string sceneName = SceneManager.GetActiveScene().name;
+            string resourceName = "BASHRules";
+            if (sceneName == GameRoutes.BashSceneName)
+            {
+                resourceName = "BASHRules";
+            }
+            else if (sceneName == GameRoutes.PlateauSceneName)
+            {
+                resourceName = "plateauRules";
+            }
+            else if (sceneName == GameRoutes.DefaultScene) // StairsGame
+            {
+                resourceName = "stepsRules";
+            }
+
+            TextAsset rulesAsset = Resources.Load<TextAsset>(resourceName);
+            if (rulesAsset != null)
+            {
+                text.text = rulesAsset.text;
+            }
+            else
+            {
+                text.text = "Rules not found in Resources/" + resourceName + ".txt";
+            }
+
+            UnityEngine.UI.ContentSizeFitter csf = contentGo.AddComponent<UnityEngine.UI.ContentSizeFitter>();
+            csf.verticalFit = UnityEngine.UI.ContentSizeFitter.FitMode.PreferredSize;
+
+            UnityEngine.UI.ScrollRect scrollRect = rulesCanvasGo.AddComponent<UnityEngine.UI.ScrollRect>();
+            scrollRect.content = contentRt;
+            scrollRect.viewport = viewportRt;
+            scrollRect.horizontal = false;
+            scrollRect.vertical = true;
+            scrollRect.movementType = UnityEngine.UI.ScrollRect.MovementType.Clamped;
+            scrollRect.scrollSensitivity = 15f;
+
+            ScrollTextWithJoystick scroller = rulesCanvasGo.AddComponent<ScrollTextWithJoystick>();
+            scroller.scrollRect = scrollRect;
+            scroller.inputs = inputs;
+            scroller.scrollSpeed = 1.5f;
+        }
 
         ApplySceneKeyFilter();
         ShowVoiceState();
