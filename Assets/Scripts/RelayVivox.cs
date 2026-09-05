@@ -17,16 +17,38 @@ public class RelayVivox : MonoBehaviour
     public string relayRoomCode;
     public string myUserDisplayName;
     public bool roomOwner;
+
+    [Tooltip("Relay transport protocol: \"dtls\" (encrypted UDP, the default and the only one " +
+             "Unity's current NGO Relay docs describe), \"udp\" (plain), or \"wss\". A field " +
+             "rather than a literal so both can be tried in one session without a rebuild — see " +
+             "docs/quest_networking_plan.md. It MUST match on the host and the joiner.")]
+    public string connectionType = "dtls";
+
+    // Unity Services sign-in is asynchronous and used to be fire-and-forget: a headset that came up
+    // without a network signed in silently-never, the player could still type a room code, and the
+    // RelayService call then failed in a way GameController does not catch.
+    private bool servicesReady;
+
     // Start is called before the first frame update
     private async void Start()
     {
-        await UnityServices.InitializeAsync();
+        try
+        {
+            await UnityServices.InitializeAsync();
 
-        AuthenticationService.Instance.SignedIn += () => {
-            Debug.Log("Signed in " + AuthenticationService.Instance.PlayerId);
-        };
+            AuthenticationService.Instance.SignedIn += () => {
+                Debug.Log("Signed in " + AuthenticationService.Instance.PlayerId);
+            };
 
-        await AuthenticationService.Instance.SignInAnonymouslyAsync();
+            await AuthenticationService.Instance.SignInAnonymouslyAsync();
+            servicesReady = true;
+        }
+        catch (Exception e)
+        {
+            // async void: an exception here has nowhere to go and would vanish without a trace.
+            Debug.LogError("RelayVivox: Unity Services sign-in failed. Hosting and joining will " +
+                           "not work. Is the headset on a network? " + e);
+        }
     }
 
     public async Task StartRelayAndVivox(string userDisplayName)
@@ -41,8 +63,25 @@ public class RelayVivox : MonoBehaviour
         await JoinRelay(joinCode);
     }
 
+    /// <summary>
+    /// Says so when the room is about to be built on a sign-in that never happened. Deliberately
+    /// only a log: RelayService itself throws a RelayServiceException when it is not authenticated,
+    /// and GameController already recovers from that — this just names the real cause first, so the
+    /// in-headset box says "no network at launch" rather than only "Wrong Room Code".
+    /// </summary>
+    private void RequireServices()
+    {
+        if (!servicesReady)
+        {
+            Debug.LogWarning("RelayVivox: Unity Services never finished signing in. The relay call " +
+                             "below is expected to fail.");
+        }
+    }
+
     public async Task CreateRelay()
     {
+        RequireServices();
+
         try
         {
             roomOwner = true;
@@ -50,7 +89,8 @@ public class RelayVivox : MonoBehaviour
             relayRoomCode = await RelayService.Instance.GetJoinCodeAsync(allocation.AllocationId);
             Debug.Log(relayRoomCode);
 
-            NetworkManager.Singleton.GetComponent<UnityTransport>().SetRelayServerData(allocation.ToRelayServerData("dtls"));
+            Debug.Log("RelayVivox: hosting over \"" + connectionType + "\".");
+            NetworkManager.Singleton.GetComponent<UnityTransport>().SetRelayServerData(allocation.ToRelayServerData(connectionType));
 
             /*Old Method
             NetworkManager.Singleton.GetComponent<UnityTransport>().SetHostRelayData(
@@ -72,6 +112,8 @@ public class RelayVivox : MonoBehaviour
 
     public async Task JoinRelay(string joinCode)
     {
+        RequireServices();
+
         try
         {
             roomOwner = false;
@@ -82,7 +124,8 @@ public class RelayVivox : MonoBehaviour
             UnityTransport transport = NetworkManager.Singleton.GetComponent<UnityTransport>();
             Debug.Log($"Configuring transport. Protocol is: {transport.Protocol}");
 
-            NetworkManager.Singleton.GetComponent<UnityTransport>().SetRelayServerData(joinAllocation.ToRelayServerData("dtls"));
+            Debug.Log("RelayVivox: joining over \"" + connectionType + "\".");
+            NetworkManager.Singleton.GetComponent<UnityTransport>().SetRelayServerData(joinAllocation.ToRelayServerData(connectionType));
             /* Old Method
             NetworkManager.Singleton.GetComponent<UnityTransport>().SetClientRelayData(
                 joinAllocation.RelayServer.IpV4,

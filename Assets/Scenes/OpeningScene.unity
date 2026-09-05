@@ -339,6 +339,7 @@ GameObject:
   - component: {fileID: 125340876}
   - component: {fileID: 125340875}
   - component: {fileID: 125340877}
+  - component: {fileID: 125340878}
   m_Layer: 0
   m_Name: Network Manager
   m_TagString: Untagged
@@ -373,9 +374,10 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: f97c0ce1518575f47ae8959f4dc4e228, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  relayRoomCode: 
-  myUserDisplayName: 
+  relayRoomCode:
+  myUserDisplayName:
   roomOwner: 0
+  connectionType: dtls
 --- !u!114 &125340875
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -467,6 +469,20 @@ MonoBehaviour:
   LocalizeTimeoutSeconds: 8
   LoadAttempts: 3
   UntrackedWarningSeconds: 2
+--- !u!114 &125340878
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 125340870}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 7c4a1e93b0d2f84ab9e5c61074f3d8a2, type: 3}
+  m_Name:
+  m_EditorClassIdentifier:
+  LogHeartbeat: 0
+  IntervalSeconds: 1
 --- !u!1 &219616264
 GameObject:
   m_ObjectHideFlags: 0
@@ -520,6 +536,7 @@ MonoBehaviour:
   rh: {fileID: 1512527778}
   lh: {fileID: 1794733826}
   pointer: {fileID: 426979187}
+  JoinTimeoutSeconds: 15
 --- !u!114 &219616268
 MonoBehaviour:
   m_ObjectHideFlags: 0

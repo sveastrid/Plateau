@@ -15,8 +15,11 @@ The game being built is **Plateau** — plateaus, bridges, gemhearts, chasmfiend
 shared content frame, the world grab, the player ring and the menu.
 
 Of the rules, **starting forces and piece movement are implemented** — see
-[The Plateau game](#the-plateau-game). **Turns, harvesting, buying, gemhearts, chasmfiends and win
-conditions are not**: any player may move their own pieces at any time.
+[The Plateau game](#the-plateau-game). **Turns, harvesting, buying and win conditions are not**: any
+player may move their own pieces at any time. Gemhearts and chasmfiends exist as *pieces* — a
+neutral `PieceKind` each, placed and removed by hand from the spawn menu — and each seat has a
+gemheart score that is likewise adjusted by hand. They are props for playing the rest of the game
+around, not the rules working.
 
 ## Toolchain and targets
 
@@ -25,7 +28,7 @@ conditions are not**: any player may move their own pieces at any time.
 | Unity | **6000.5.4f1** exactly (`ProjectSettings/ProjectVersion.txt`) |
 | Render pipeline | URP 17.5.0, Linear color space |
 | XR | Meta XR Core SDK **205.0.0** (scoped registry `npm.developer.oculus.com`) + Oculus XR Plugin 4.5.4, via Unity's `XROrigin` — **not** `OVRCameraRig` |
-| Networking | Netcode for GameObjects 2.13.0 over Unity Relay (host/client, DTLS, no dedicated server), tick rate 30 |
+| Networking | Netcode for GameObjects 2.13.0 over Unity Relay (host/client, no dedicated server), tick rate 30. Transport protocol is `RelayVivox.connectionType`, default `dtls` — **it must match on host and joiner**; see [`quest_networking_plan.md`](quest_networking_plan.md) |
 | Voice | Vivox 16.10.0, one group audio channel per room |
 | Platform | Android / Quest, **ARM64 only**, IL2CPP, minSdk + targetSdk 34 |
 | App id | `com.CoolDeal.MRBoardGame2` |
@@ -77,6 +80,22 @@ have to agree; changing one means changing the other.
 
 - **No CLI tooling, no CI, no package scripts.** All builds go through the Editor
   (File > Build Settings, Android).
+- **C# can still be compile-checked headlessly**, without opening the Editor or taking the project
+  lock. Take `<DefineConstants>` and the `<HintPath>` references from `Assembly-CSharp.csproj`
+  (the Editor regenerates it; its `<Compile Include=>` list goes stale, so glob `Assets/Scripts`
+  yourself), write a csc response file, and run Unity's **.NET** Roslyn —
+  `Editor/Data/DotNetSdk/dotnet.exe Editor/Data/DotNetSdk/sdk/<ver>/Roslyn/bincore/csc.dll @rsp`.
+  Not `MonoBleedingEdge`'s `csc.exe`, which fails to load `System.Text.Encoding.CodePages` and never
+  reaches compilation. `Assets/Editor/*.cs` needs the same treatment against
+  `Assembly-CSharp-Editor.csproj`, plus a reference to the runtime assembly you just built.
+  **Always pass an explicit `-out:` outside the repo** — see the `BoardAnchor.dll` trap under
+  [Dead or unwired code](#dead-or-unwired-code). Expect pre-existing `CS0618` warnings on
+  `ServerRpcAttribute.RequireOwnership` and `FindFirstObjectByType` and ignore them. This checks C#
+  only: it does not run Netcode's ILPP, so RPC/`NetworkVariable` codegen problems still need the
+  Editor, and it cannot validate scene or prefab YAML wiring.
+- `Library/ScriptAssemblies/Assembly-CSharp.dll` is only rebuilt when the Editor next opens, so a
+  timestamp older than `Assets/Scripts/*.cs` means the current code has **never been compiled**.
+  Check that before trusting that edits are sound.
 - **No automated tests.** `com.unity.test-framework` is in the manifest, but there are no test
   assemblies, no `Tests/` folders, and **no `.asmdef` anywhere** — every runtime script compiles
   into the default `Assembly-CSharp`. Adding tests means creating assembly definitions first.
@@ -149,6 +168,7 @@ World Root            [RoomContent]        <- everything the game owns hangs her
                                               Plateau Game  [PlateauBoard, PlateauPieceView]
                                               and at the scene root:
                                               Plateau Controller [PlateauSelection, PlateauSpawnMenu]
+                                              Plateau Chooser    [PlateauChooser]  <- novelty prop
 ```
 
 `Input Reader`, `Menu Manager`, `XRRig` and `Directional Light` are **not** part of this — they
@@ -159,7 +179,7 @@ PersistentRig          [PersistentObject]   <- DontDestroyOnLoad; lives only in 
   Directional Light
   XRRig                 [XROrigin, CameraController2, OVRManager,
                          OVRPassthroughLayer, PassthroughController,
-                         WorldGrab, ColocationProbe(disabled)]
+                         WorldGrab, ColocationProbe(ENABLED — see below)]
     Camera Offset
       Main Camera
       Left Hand         [TrackedPoseDriver, LHController]
@@ -179,7 +199,9 @@ height against it.
 ## Session flow
 
 1. `OpeningScene` loads. `RelayVivox.Start()` initializes Unity Services and signs in
-   anonymously. `MicPermissions` requests `RECORD_AUDIO`.
+   anonymously, setting `servicesReady`; a failure here (a headset that came up with no network) is
+   caught and logged rather than vanishing into the `async void`. `MicPermissions` requests
+   `RECORD_AUDIO`.
 2. `GameController.Update()` reads whichever key the laser pointer is touching
    (`pointerControl.currentLetter`) and commits it on right-trigger down — first a **room code**,
    then a **username**.
@@ -190,14 +212,27 @@ height against it.
    - **non-empty code** → `RelayVivox.JoinRelay()` → `StartClient()`. **No `LoadScene` here on
      purpose** — Netcode synchronizes the joiner into whatever scene the room already has open. A
      bad code throws `RelayServiceException`, caught in `GameController.TryToJoinRelayVivox()`,
-     which re-prompts.
+     which re-prompts through `ShowJoinFailed`. Both entry points take a `connectInFlight` latch,
+     and `pressedKey` is cleared on every press — without that, a second trigger pull during the
+     seconds before the joiner is pulled out of the lobby re-ran the whole join and the fresh
+     allocation invalidated the one already connecting.
 4. Vivox joins a group audio channel named after the room code.
 5. `NetworkManager.OnServerStarted` fires `BoardAnchor.HandleServerStarted`, which instantiates
    `Room Anchor.prefab` and calls `Spawn(destroyWithScene: false)`.
 
-The **Network Manager** GameObject carries `NetworkManager`, `UnityTransport`, `RelayVivox` and
-`BoardAnchor`. Netcode marks it `DontDestroyOnLoad`, which is why `BoardAnchor` lives there: it
-must outlive the scene switches below.
+The **Network Manager** GameObject carries `NetworkManager`, `UnityTransport`, `RelayVivox`,
+`BoardAnchor` and `NetworkProbe`. Netcode marks it `DontDestroyOnLoad`, which is why `BoardAnchor`
+and `NetworkProbe` live there: both must outlive the scene switches below.
+
+**A join that fails after Relay accepted it is now visible.** `JoinAllocationAsync` succeeding only
+means the REST call worked — the transport handshake and Netcode's own handshake happen afterwards,
+and nothing used to watch them, so any failure past that point left the lobby on "Joining room…"
+for ever. `GameController` now subscribes `OnClientDisconnectCallback` and `OnTransportFailure`, and
+runs a `JoinTimeoutSeconds` (15 s) watchdog; all three land in one `ShowJoinFailed`, which returns
+the player to the room-code keyboard and calls `NetworkManager.Shutdown()` so the retry is not
+refused by an instance still grinding through `m_MaxConnectAttempts` (60 × 1000 ms). An empty
+`DisconnectReason` is reported as a probable build mismatch, because that is exactly what Netcode's
+config-hash refusal sends. See [`quest_networking_plan.md`](quest_networking_plan.md).
 
 ### Switching games
 
@@ -239,8 +274,9 @@ switch — see [Switching games](#switching-games) for what still runs on that s
 **Resting position.** The prefab's own root transform is `(0, 0, -10)`, matching what
 `OpeningScene`'s and `GameScene`'s original local rigs were both hand-placed at (facing the
 keyboard / the menu, respectively). `CameraController2.PlaceAtRingSlot` repositions the rig at
-runtime for actual game scenes (`GameRoutes.IsGameScene` — currently `StairsGame` and `ChasmGame`),
-so the baked default only matters for the two scenes that never call it. Do not "fix" this position
+runtime for actual game scenes (`GameRoutes.IsGameScene` — `StairsGame`, `ChasmGame` and
+`BashGame`, i.e. every value in `GameRoutes.SceneByKey`), so the baked default only matters for the
+two scenes that never call it: `OpeningScene` and the legacy `GameScene`. Do not "fix" this position
 to somewhere sensible for a game scene — that breaks the lobby instead.
 
 **`gameObject.scene` is the fixed pseudo-scene `"DontDestroyOnLoad"` on every persisted object,
@@ -309,8 +345,24 @@ of those slides a one-shot alignment permanently out of the shared frame. The tr
 idempotent by construction, so a frame in which nothing moved writes back the pose already there.
 It is **yaw-only** — pitch and roll from an anchor are noise, and applying them would tip the board
 off the real floor — but it *does* take the anchor's height, because each headset puts `y = 0` on
-its own floor estimate and those differ by centimetres. A height disagreement past
-`MaxAnchorHeightDisagreement` (0.25 m) **rejects the whole frame** rather than half-applying it.
+its own floor estimate and those differ. A height disagreement past
+`MaxAnchorHeightDisagreement` **rejects the whole frame** rather than half-applying it.
+
+**That guard is `0.6 m`, and it is a tracking-failure bound — not a floor-calibration one.** It was
+`0.25 m`, which rejected the very case the height correction exists to fix: a headset that has never
+had Space Setup run is guessing the floor from whatever surface it last saw and can be half a metre
+out, and because the check re-runs and re-fails every frame such a headset **never aligned at all,
+not once**. The startup race the tight bound was really guarding against is now caught separately
+and directly, by asking `XROrigin.CurrentTrackingOriginMode` whether it has reached `Floor` yet —
+until it has, `Camera Offset` is not zeroed and every pose in `AlignRigToAnchor` is off by the
+serialized `CameraYOffset`. Both are driven by the same event, so "the mode reads Floor" and
+"`Camera Offset` has been zeroed" are one fact rather than two that could disagree. The rejection
+warning is rate-limited to one every `HeightWarningIntervalSeconds` (5) — at frame rate it was a log
+flood, and the interesting events are "it started" and "it stopped".
+
+> The serialized value wins over the initializer, so raising the default in `CameraController2.cs`
+> is **not enough on its own** — `PersistentRig.prefab` carries its own copy and that is what runs.
+> This is the same class of trap as [serialized-field renames](#conventions-that-break-silently).
 
 **What alignment switches off.** Once `CameraController2.LocalIsAligned` is true, joystick
 locomotion, snap-turn, recentring and the debug tilt all early-out (`CameraController2.cs:91-94`),
@@ -337,17 +389,19 @@ just placed.
 
 ### Execution-order contract
 
-Four components carry `[DefaultExecutionOrder]` and the values are load-bearing:
+Ten components carry `[DefaultExecutionOrder]` and the values are load-bearing. The whole chain
+exists to put everything that *reads* a world pose after everything that *writes* one:
 
 | Order | Component | Why |
 | --- | --- | --- |
 | **−10** | `PlateauBoard` | bakes the plateau table and the adjacency graph before anything reads them. Also idempotent via `EnsureBaked()`, because `PlateauGame`'s server tick can arrive in the same frame as the scene load |
-| (default 0) | `CameraController2` | locomotion, recentre |
+| (default 0) | `CameraController2` | locomotion, recentre, and the per-frame alignment to the room anchor |
 | **10** | `BoardAnchor` | must run **after** `OVRSpatialAnchor.Update()` refreshes the anchor's world pose; reading it earlier gets last frame's rig baked in |
 | **15** | `RoomContent` | applies the shared board pose to `World Root` in this frame's aligned frame |
 | **20** | `PlayerControls`, `WorldGrab` | sample head/hand world poses **after** the rig has moved; at order 0 every pose broadcast is a frame stale (~13 ms at 72 Hz) on top of network latency |
+| **23** | `PlateauSpawnMenu` | so `IsOpenOrOpening` is up to date before `PlateauSelection` reads it. Ordering is no longer what protects the selection — `IsOpenOrOpening` is, because the 0.15 s open debounce leaves the menu "closed" for ~10 frames after the grip goes down |
 | **24** | `PointerBeam` | one `Physics.SyncTransforms()` + one raycast, after the rig and the board have both settled |
-| **25** | `PlateauSelection` | consumes the hit `PointerBeam` produced this frame |
+| **25** | `PlateauSelection`, `PlateauChooser`, `ControlListener` | all three consume the hit `PointerBeam` produced this same frame. They are peers and none depends on the others — `PlateauChooser` and `PlateauSelection` are both ChasmGame, `ControlListener` is BASH |
 | **30** | `PlateauPieceView` | reconciles pieces; its `LateUpdate` billboard needs the final `World Root` pose |
 
 ## The content frame and the two-grip world grab
@@ -414,9 +468,17 @@ more room, change `PlayerRing.Radius` rather than moving boards per scene.
 ## The Plateau game
 
 The first slice of `plateauRules.md`: starting forces, and moving pieces around the board. **Turns,
-harvesting, buying, gemhearts, chasmfiends and win conditions are not implemented** — any player may
-move their own pieces at any time. The *reachability* half of every movement rule is enforced; the
-once-per-turn cap is not.
+harvesting, buying and win conditions are not implemented** — any player may move their own pieces
+at any time. The *reachability* half of every movement rule is enforced; the once-per-turn cap is
+not.
+
+There are **six `PieceKind`s** (`PlateauTypes.cs`): `Bridge` 0, `Troop` 1, `Parshendi` 2,
+`Shardbearer` 3, `Gemheart` 4, `Chasmfiend` 5. The last two are **neutral** — owned by
+`PlateauConst.NeutralSeat` rather than by a player, so they get no owner-colour disc
+(`PlateauPalette.DiscFor` returns the authored alpha-0.035 white for any out-of-range seat) and no
+movement rules. They are placed and removed by hand, on whichever plateau the player has selected,
+which is what makes it possible to play the unimplemented parts of the rules by agreement around the
+table.
 
 All of it lives in `Assets/Scripts/Plateau/`. A subfolder with no `.asmdef` still compiles into
 `Assembly-CSharp`, so this changes nothing structurally.
@@ -440,8 +502,11 @@ object is already spawned exactly once and already survives every `LoadSceneMode
 network prefab would mean editing `DefaultNetworkPrefabs.asset`, and with `ForceSamePrefabs: 1` a
 stale list is a hard connection failure with a generic error.
 
-Everything on it is server-written; the two RPCs are `RequireOwnership = false`, validate
-`p.Receive.SenderClientId` against the sender's seat, bounds-check every index, clamp the count, and
+Everything on it is server-written. Its nine `ServerRpc`s are all `RequireOwnership = false`
+(`RequestMove`, `RequestPlaceBridge`, `RequestMoveBridge`, `RequestAddPiece`, `RequestRemovePiece`,
+`RequestAddNeutralPiece`, `RequestRemoveNeutralPiece`, `RequestAddScore`, `RequestSubtractScore`,
+plus `RequestSpinChooser`), and every one of them validates `p.Receive.SenderClientId` against the
+sender's seat, bounds-checks every index and clamps the count. The three movement ones additionally
 **re-run the same `PlateauMoveRules` call the client used to draw the highlight**. The client's
 highlight is a hint; the server's answer is the rule.
 
@@ -559,6 +624,59 @@ switches to it.
 - **No local prediction.** This project only predicts state a client holds an exclusive
   server-granted lock on (`RoomAnchor.worldHolder`); there is no such lock for a move.
 
+### The spawn menu — `PlateauSpawnMenu`
+
+Each player's personal piece menu, standing in for `plateauRules.md`'s "Buying Pieces" with a free,
+uncapped `+`/`−` until buying is implemented. **Holding the LEFT grip by itself opens it**; letting
+go, adding the right grip, or opening `Menu1` closes it again. It hangs off `SpawnMenu` under the
+shared `Left Hand` and is tinted with the local player's own seat colour every frame it is open,
+purely so a player can tell at a glance that the menu on their wrist is theirs — local, never
+networked, like the passthrough toggle.
+
+Keys are dispatched by `keyInfo.keyName`, the same contract as `MenuControl.HandleKey`, and an
+unwired key is inert and logs. Three groups, and they do **not** all target the same plateau:
+
+| Keys | Target | RPC |
+| --- | --- | --- |
+| `Add`/`Remove Troop`, `Parshendi`, `Shardbearer`, `Bridge` | the **central** plateau, sender's own seat | `RequestAddPieceServerRpc` / `RequestRemovePieceServerRpc` |
+| `Add`/`Remove Gemheart`, `Chasmfiend` | whichever plateau the sender has **selected** (`PlateauSelection.TryGetSelectedPlateau`), neutral seat | `RequestAddNeutralPieceServerRpc` / `RequestRemoveNeutralPieceServerRpc` |
+| `Add to Score`, `Subtract From Score` | the sender's own seat's `gemheartScores` entry | `RequestAddScoreServerRpc` / `RequestSubtractScoreServerRpc` |
+
+**Unlike `Menu1` this never drops the board selection while it is opening or open** —
+`PlateauSelection.Update()` special-cases `IsOpenOrOpening` for exactly this, because the `−` and
+neutral keys act on whatever the player already has selected. That flag, not the execution order,
+is what protects the selection: the 0.15 s open debounce leaves the menu reading "closed" for about
+ten frames after the grip goes down.
+
+`gemheartScores` is a `NetworkList<byte>` on `PlateauGame`, indexed by seat and grown lazily —
+`plateauRules.md`'s "each player can see how many gemhearts they currently hold", adjusted by hand
+because harvesting is not implemented. It renders on the `ScoreTag` label under every *other*
+player's `TagsRoot`; see [Avatar replication](#avatar-replication).
+
+### The Plateau Chooser
+
+`Plateau Chooser`, a scene-root object in `ChasmGame` beside `Plateau Controller` — **a novelty
+prop, not one of the 41 plateaus `PlateauBoard` tracks.** Click it the same way a piece is selected
+(`PlateauSelection`'s point-from-a-distance idiom, *not* `pointerControl`'s physical-touch one) and
+it shuffles through the three per-plateau material tiers, slowing over about two seconds before
+landing on one, weighted **15% / 35% / 50%** — the same `15/35/50.mat` materials 40 of the 41 real
+plateaus carry as a per-instance override, and the same percentages `plateauRules.md` gives for "the
+percent chance of that color being chosen". Independently, its Chasmfiend child — a serialized
+reference (`chasmfiendObject`), not a `Find` by name, and inactive in the authored scene — has a
+**30%** chance of waking up.
+
+All of that is authoritative on `PlateauGame` (`chooserSpinEpoch`, `chooserResultEpoch`,
+`chooserMaterialIndex`, `chooserChasmfiendActive`), like every other piece of board state;
+`PlateauChooser` only asks for a spin and plays a local, latency-tolerant flourish while the real
+answer is in flight. It is a plain `MonoBehaviour` with no `NetworkObject`, the same as
+`PlateauSelection`, `PlateauPieceView` and `PlateauSpawnMenu` — all four talk to
+`PlateauGame.Instance` rather than carrying wire state of their own.
+
+**A material swap here is correct**, and it is the one place in Chasms where that is true: this is a
+single unique object, not 41 plateaus carrying up to 36 owner-coloured pieces each, so `keyInfo`'s
+instantiating `.material` idiom costs one instance rather than 41 leaks. See
+[Highlighting](#highlighting--materialpropertyblock-not-keyinfos-material-swap) for the other case.
+
 ### The pointer
 
 `pointerControl` is untouched — it is still a 2 m trigger capsule filtering on the tag `key`, which
@@ -621,19 +739,66 @@ Ported from `D:\Unity_Stuff\BASH_U6`; the plan and its corrections are
 subfolder that compiles into `Assembly-CSharp`.
 
 Four players sit around a 3 m square of water. Each owns a **base** carrying four gamepieces —
-boat (0), plane (1), sub (2), helicopter (3). Point at one of yours with the right trigger to
-select it, **hold the left trigger** to fire a growing tube of geometry steered by the right
-joystick, release, and the piece teleports to the end of the trail. The trail is a live collider
-while it is drawn, and what it touches decides what happens:
+boat (0), plane (1), sub (2), helicopter (3). Point at one of yours with the right trigger to select
+it. What happens next depends on which piece it is, and **the four split into halves two different
+ways** — `BashRoot.UsesArtillery` and `BashRoot.IsSurfaceCraft`, written out as named predicates one
+line apart precisely because as bare integer comparisons they look like a mistake and invite being
+"tidied" into agreement:
+
+| | boat | plane | sub | helicopter |
+| --- | --- | --- | --- | --- |
+| `UsesArtillery` — lobs a shell before moving | ✔ | ✔ | | |
+| `IsSurfaceCraft` — an island kills it | ✔ | | ✔ | |
+
+- **sub, helicopter** — the piece spins on the spot at `SpinDegreesPerSecond` (90°/s, a full sweep
+  every four seconds), carrying its coloured cannon dot round with it. The left trigger freezes the
+  heading and fires. **Aiming is timing, not steering.** The line is lethal, and the piece teleports
+  to the end of it.
+- **boat, plane** — two trigger presses. First an **artillery arc**, aimed with the joystick, lobbed
+  over the water and destroying everything within `blastRadius` of where it lands — anyone's pieces,
+  **including the shooter's own**. Then the same spin-aimed line as above, which carries the piece
+  but harms nobody.
+
+The heading is derived from `NetworkManager.ServerTime` and a single `spinStartTime` write rather
+than streamed per tick, so every headset puts the dot in the same place.
+
+`ControlListener.Phase` (`Idle` → `Aiming` → `Lobbing` → `Spinning` → `Firing`) holds all of this.
+**The phase lives on the controller, not on the piece**, which is what makes cancelling behave: a
+boat that loses its lob to an opened menu returns to `Aiming` and may lob again, while one that
+loses its *move* returns to `Spinning` — it has already spent its shell.
+
+While a movement line is drawn it is a live collider, and what it touches decides what happens:
 
 | Tag hit | Effect |
 | --- | --- |
-| `gamepiece` | that piece is destroyed — this is how you kill people |
-| `obstacle` | walls and base pads: the shot ends there and **your** piece dies |
-| `island` | boats and subs die; planes and helicopters fly over |
+| `gamepiece` | destroyed — but **only if the line `killsPieces`**, i.e. the spin-aimed shot of a sub or helicopter. A boat's or plane's post-lob move is harmless |
+| `obstacle` | walls and base pads: the shot ends there and **your** piece dies. Not gated — a harmless move still stops on a wall |
+| `island` | `IsSurfaceCraft` (boat, sub) die; plane and helicopter fly over. Not gated either, or a plane's harmless move would be a way to park inside an island |
 
-Not turn-based, and no win condition: any player may fire at any time. That is how BASH already
-was and the port did not change it.
+The turn ends by deselecting the piece, so nothing is left spinning on the board after a player has
+acted — but that deselection is the whole of the "turn". Still not turn-based and still no win
+condition: any player may fire at any time. That is how BASH already was and the port did not change
+it.
+
+### The artillery arc
+
+A fixed **`arcSegments` (24)** points, *not* one per frame like the movement line: `PipeRenderer`
+rebuilds the entire mesh from the entire point list on every call, so a list growing by a point per
+frame is quadratic work across a shot — and `SpawnNetworkCannonLineServerRpc` sends the array, so 25
+points is 300 bytes, bounded for ever, whatever scale the board is at.
+
+- `arcApexRatio` 0.25 is exactly a 45° launch; the launch angle is `atan(4 · apex / range)`.
+- `arcMaxApex` 0.35 caps it in board-local units. Uncapped, a full-board lob peaks 0.75 m over the
+  table, which in passthrough is at chest height and reads as a wall rather than an arc.
+- `minArcRange` 0.02: below it the arc is a single point, and `PipeRenderer.GenerateCylinder`
+  `FromToRotation`s the difference between the first two positions — a zero vector, giving a
+  degenerate or NaN mesh with no exception. A mis-tapped trigger keeps the shell instead.
+- `clampArcToBoard` is on. The hit rule ignores walls, which is the point of lobbing, but taken
+  literally a held trigger throws the impact point off the board and into the room behind a player.
+- `arcLifetime` 1.5 s, applied to both the local preview and the replicated object, so an arc is
+  seen and then goes rather than accumulating.
+- `Physics.SyncTransforms()` before the blast overlap, for the same reason `PointerBeam` does it:
+  `RoomContent` is still smoothing `World Root` and `m_AutoSyncTransforms` is `0`.
 
 ### `Bash Root` is the content frame
 
@@ -670,8 +835,30 @@ is a one-number edit on `Board`.
 ### Seats
 
 `PlayerControls.spawnSlot` — the only stable per-player index in the project, and already the
-colour index for Chasms. **Seats 0-3 get a base; 4-11 spectate**, and `ControlListener` tolerates
-a null `netBaseControl` throughout because of it.
+colour index for Chasms. `ControlListener` tolerates a null `netBaseControl` throughout, because a
+player without a base spectates.
+
+**`spawnSlot` is a place on `PlayerRing`'s twelve-slot ring, not a base index, and the two are not
+the same number.** `PickFreeSlot` hands out the middle of the widest gap, so the first four players
+get slots **0, 6, 3, 9** — treating that as a base index is what gave the second player into a
+two-player game no base at all. `SpawnManager.BaseForRingSlot` is the map, and its four entries are
+a measurement (they are the four slots a base actually stands at, per `SeatPosition`/`SeatYaw`), not
+a convention.
+
+`ServeSeats` is **two passes, and the order between them is the whole point**:
+
+1. **The rule.** A player standing on one of the four ring slots a base stands at gets *that* base,
+   whoever else is in the room and in whatever order Netcode enumerates clients.
+2. **The fallback**, which only fires for a ring fragmented by mid-game departures — five players,
+   the one at slot 0 leaves, and `PickFreeSlot` answers 11 for the next joiner rather than 0. Rather
+   than leave base 0 empty while a player has none, hand out the lowest base nobody claimed in pass
+   1. Running it *after* pass 1 is what stops a leftover player taking a base somebody else's ring
+   slot entitles them to.
+
+A player who got their base from pass 2 is standing somewhere other than behind it, and
+`BaseIndexForRingSlot` answers `-1` for them, so their trails clamp to colour 0 — a cosmetic
+mismatch confined to that same case. Fixing it properly means the server telling each client which
+base it was handed, which is not worth a `NetworkVariable` until spectator seats are tested at all.
 
 BASH's own `NetworkManager.ConnectedClients.Count` scheme is gone: it handed two players the same
 base whenever somebody left and somebody else joined. `SpawnManager` **polls at 4 Hz** rather than
@@ -679,7 +866,9 @@ hooking `OnClientConnectedCallback`, for the identical reason `PlateauGame` does
 assigned inside `PlayerControls.OnNetworkSpawn`, which can run later. A seat that already has a
 base and a new occupant gets `ChangeOwnership`, so a reconnecting player is handed the base they
 left rather than a second one; `NetworkBaseControl.OnGainedOwnership` re-wires it to their
-`Controls`.
+`Controls`. The fallback deliberately keeps a client's existing base rather than re-deriving one
+each tick — `ConnectedClients` enumerates in insertion order today but nothing promises it, and a
+base changing hands every tick would re-run `OnGainedOwnership` four times a second.
 
 ### Interaction
 
@@ -696,20 +885,38 @@ way `PlateauSpawnMenu.Bind()` does for Chasms.
 
 ### Known rough edges, inherited
 
-- `SpawnNetworkCannonLineServerRpc` sends an **unbounded `Vector3[]`**. A long shot is several
-  hundred points; a bigger board makes longer shots. If shots stop replicating, cap or simplify
-  the polyline before sending.
-- **Trails are never despawned except by `Reset Game`**, and each shot leaves both a local preview
-  and a replicated `NetworkObject`. Over a long game that grows without bound.
+- `SpawnNetworkCannonLineServerRpc` sends an **unbounded `Vector3[]` for the movement line**, which
+  still grows a point per frame. A long shot is several hundred points, and a bigger board makes
+  longer shots. (The artillery arc is *not* affected — it is a fixed 24 segments by construction.)
+  If shots stop replicating, cap or simplify the polyline before sending.
+- **Movement trails are never despawned except by `Reset Game`**, and each shot leaves both a local
+  preview and a replicated `NetworkObject`. Over a long game that grows without bound. Arcs are the
+  exception: both copies carry `arcLifetime`.
 - Spectator seats are **untested** — the null-tolerance is written but nobody has had a fifth
-  player in the room.
+  player in the room. The pass-2 colour mismatch above is untested for the same reason.
 
 ## Avatar replication
 
 `Player.prefab` (the `NetworkManager`'s player prefab, auto-spawned per client) carries
 `PlayerControls`, `GameSelector` and `ClientNetworkTransform` (a `NetworkTransform` with
 `OnIsServerAuthoritative() => false`). Children, resolved **by name** in `OnNetworkSpawn`:
-`Username`, `PlayerLeft`, `PlayerRight`, `mainFace`, `tornado`.
+`PlayerLeft`, `PlayerRight`, `mainFace`, `tornado`, and **`TagsRoot`** — which holds the three
+labels, found beneath it rather than on the root: `Username`, `ScoreTag`, `Gemheart`.
+
+**The labels hang off `TagsRoot` and are laid out in the prefab**, not offset by constants in code.
+`Update()` puts `TagsRoot` itself above the head (`FaceBelowEyes + NameTagAboveEyes`, 0.36 + 0.28)
+and billboards it; everything below it keeps its authored local offset, so the spacing is visible in
+the Scene view instead of being a number in a script that nothing reads. `ScoreTagBelowName` used to
+exist for that and is gone. There is a fallback to finding `Username`/`ScoreTag` on the root when
+`TagsRoot` is missing, so an older prefab degrades rather than throwing.
+
+> The reparent that created `TagsRoot` is worth knowing about: done in the Editor it kept Unity's
+> world-position-preserving offsets, and every label ended up **6.5 m** from its root along the view
+> axis — present, correct, and nowhere near the player. See `bugFixes2.md` §2.
+
+- `ScoreTag` shows that seat's `PlateauGame.gemheartScores` entry, and only while a Plateau game is
+  actually live. Like the nametag it is visible to everyone *except* its owner, because
+  `OnNetworkSpawn` deactivates every child of your own avatar.
 
 - **A remote player is two cones and a name.** `ShowRemoteHeadAndBody` is `false`: in passthrough
   their real head and body are already there, and a virtual copy is at best noise and at worst
@@ -722,7 +929,9 @@ way `PlateauSpawnMenu.Bind()` does for Chasms.
 - The nametag is derived from the **head pose**, not from a fixed height above the avatar root.
   The old fixed 1.43 m rendered across the face of anyone 1.45 m at eye height or taller.
   `FaceBelowEyes` (0.36) is the mesh-pivot-to-eye offset and is used in both directions, so it
-  exists once rather than as the same magic number in two places.
+  exists once rather than as the same magic number in two places. `NameTagAboveEyes` (0.28) has to
+  clear the top of a **real** head seen through passthrough, not the virtual one — which is never
+  drawn.
 - Remote poses are smoothed with a frame-rate-independent exponential lerp (`RemoteSmoothTime`
   0.06 s). `NetworkVariable` delivers at the 30 Hz tick and the headset renders at 72–90, so raw
   assignment makes the cones step. A player who has just spawned **snaps** rather than gliding in
@@ -745,8 +954,12 @@ resolved widgets with `GetChild(0).GetChild(9).GetChild(13)`, so re-skinning the
 with no compile error.) `pointerControl` reports `keyName`, not the visible label.
 
 `Menu1.prefab` holds seven keys — **`Stairs`**, **`Chasms`**, **`BASH`**, **`Place Anchor`**,
-**`Reset Game`**, **`Random Islands`**, **`Voice Chat`** — and `Menu2.prefab` holds the same six
-minus `Voice Chat`, which is host-only (see `OpenMenu1`).
+**`Reset Game`**, **`Random Islands`**, **`Voice Chat`**. `Menu2.prefab` holds the other six: the
+same list without `Voice Chat`, which is host-only. `OpenMenu1` picks between the two prefabs.
+
+This is **`Menu1`, the room menu — not `SpawnMenu`**, the per-player piece menu on the left wrist,
+which is a separate prefab with its own key set and its own dispatcher
+(`PlateauSpawnMenu.HandleKey`). See [The spawn menu](#the-spawn-menu--plateauspawnmenu).
 
 **Not every key shows in every scene.** `MenuControl.KeyScene` names the keys that belong to one
 game, and `ApplySceneKeyFilter` deactivates the rest on the menu instance as it is opened — which
@@ -825,20 +1038,25 @@ Control map as it stands:
 
 | Input | Effect |
 | --- | --- |
-| Right trigger | select a menu / keyboard key; in Chasms, select a piece or a destination plateau |
+| Right trigger | select a menu / keyboard key; in Chasms, select a piece or a destination plateau or spin the chooser; in BASH, select one of your gamepieces |
+| Left trigger | BASH only: fire — lob the arc, then commit the spin-aimed movement line |
 | `X` | open / close the menu |
 | `A` | re-align to the room anchor (`BoardAnchor.RequestReAlign`) |
 | `B` | cancel the current piece selection (Chasms) |
+| **Left grip alone** | Chasms: open the personal spawn menu (`PlateauSpawnMenu`), held — releasing it, adding the right grip, or opening `Menu1` closes it |
 | Both grips | world grab — move, turn, resize the board |
 | Left joystick | move and snap-turn — **only when not colocated and not world-grabbing** |
 | Left joystick click | recentre the rig on the ring slot |
-| Right joystick up / down | how many pieces to move (Chasms) |
+| Right joystick | Chasms: up/down sets how many pieces to move. BASH: aims the artillery arc |
 | Right joystick click | clear the in-headset debug log |
 | `M` / `N` | tilt the rig (Editor debugging) |
 
-`Y` and the individual grips are read nowhere. Note `rightJoystick.x` is **not** used and should
-stay that way: its Editor keyboard fallback is bound to `A`/`D` (`InputManager.asset`) and `A` is
-re-align, so a horizontal nudge in the Editor would also re-align the rig.
+`Y` is read nowhere. The **left grip on its own is now meaningful** (the spawn menu), so it is no
+longer true that only the pair matters — which is exactly why `PlateauSelection` and
+`ControlListener` both stand down when *either* grip is merely held, rather than waiting for
+`WorldGrab.IsActive`. Note `rightJoystick.x` is **not** read in Chasms and should stay that way:
+its Editor keyboard fallback is bound to `A`/`D` (`InputManager.asset`) and `A` is re-align, so a
+horizontal nudge in the Editor would also re-align the rig.
 
 ## Debugging in the headset
 
@@ -847,8 +1065,11 @@ re-align, so a horizontal nudge in the Editor would also re-align the rig.
 no adb, no extra UI. Right joystick click clears it. (It used to be the *left* click, which meant
 every recentre wiped the log you were reading to find out why you recentred.)
 
-`ColocationProbe` (on `XRRig`, **disabled by default** on the shared `PersistentRig` instance)
-prints one line a second:
+`ColocationProbe` (on `XRRig`) prints one line a second. **It is currently `m_Enabled: 1` on
+`PersistentRig.prefab`, i.e. running in every build** — its own class comment says to delete the
+component once the numbers are known, and that has not happened. Practical consequence: at 1 Hz it
+refills the ten-line box every ten seconds, so **turn it off before debugging anything else**,
+`NetworkProbe`'s connection events included. It prints:
 rig/head height, `aligned`, `anchored`, `tracked`, the short UUID, the count of system-initiated
 recenters, the content scale, the lock holder, and every remote player's head/hand height. Its
 class comment is a read-it-like-this guide; the short version:
@@ -859,7 +1080,21 @@ class comment is a read-it-like-this guide; the short version:
 - `head.y ≈ 1.36` or `≈ 2.7` on a standing adult → `Camera Offset` was never zeroed; nothing else
   means anything until this clears
 
-Enable it before changing anything in this area, and take a baseline first.
+Take a baseline before changing anything in this area.
+
+`NetworkProbe` (on **`Network Manager`**, not the rig — Netcode marks that object
+`DontDestroyOnLoad`, so the probe is still listening after a game switch, which is exactly when a
+late disconnect shows up) logs every connection event: `connected as client`, `peer JOINED` /
+`peer LEFT`, `connection LOST` with `NetworkManager.DisconnectReason`, and `transport FAILURE`.
+Before it existed, `StartHost`/`StartClient`'s return values were discarded and nothing subscribed
+to any connection callback, so a client whose connection died *after* Netcode had synchronized it
+into the host's scene was indistinguishable from a client that was connected and alone.
+
+- **A `connection LOST` with an empty reason is Netcode's config-hash refusal**
+  (`ForceSamePrefabs`), which sends no reason string. Compare `prefabs=` on the two devices.
+- `LogHeartbeat` (off by default) adds one state line per second — `connected`, `clients`, `scene`,
+  `prefabs`, `player`. It is off because the debug box holds ten lines and a 1 Hz heartbeat scrolls
+  the events worth reading out of it.
 
 `VisibleWhenLooking` on `InfoBlock` shows the room code when the player looks at it.
 
@@ -901,11 +1136,15 @@ matches more than one active object, that is the bug, not a `Find` implementatio
 `Bridges` · `Pieces` · `Pointer` · **`Central Plateau`** (matched by exact string; without it the
 bridge rules have no seed and the board falls back to the largest plateau with an error).
 
-**Prefab child names** are equally load-bearing: `Username`, `PlayerLeft`, `PlayerRight`,
-`mainFace`, `tornado` on `Player.prefab`; `Count` and `Cube` on `Soldier`, `Parshendi`,
-`Shardbearer` and `Bridge`; `Cylinder` on `Bridge Spots`. These used to be
-`GetChild(1)..GetChild(4)`, so reordering the Hierarchy produced a scrambled avatar with no error.
-Now a rename logs one.
+**Prefab child names** are equally load-bearing: `TagsRoot` (and `Username`, `ScoreTag`, `Gemheart`
+*inside* it), `PlayerLeft`, `PlayerRight`, `mainFace`, `tornado` on `Player.prefab`; `Count` and
+`Cube` on `Soldier`, `Parshendi`, `Shardbearer` and `Bridge`; `Cylinder` on `Bridge Spots`. These
+used to be `GetChild(1)..GetChild(4)`, so reordering the Hierarchy produced a scrambled avatar with
+no error. Now a rename logs one.
+
+Two of those are nested prefab instances whose names are **modification overrides** rather than
+plain `m_Name` fields (`face` and `tornado`), so grepping `Player.prefab` for `m_Name:` will not
+find them — look for `propertyPath: m_Name`.
 
 **Sibling order under `Plateaus` is the plateau index.** Reordering those 41 children renumbers the
 whole board, and the numbers are on the wire. Adding one at the end is safe.
@@ -921,6 +1160,14 @@ to be `RightHand`; `PersistentRig.prefab` (built from `StairsGame`'s old copy) s
 data under the old key, orphaned, and reads null under the current name. This is why several
 components re-resolve a null serialized reference in `Start()` — treat that as the pattern, not as
 belt and braces.
+
+**`DefaultNetworkPrefabs.asset` must hold only prefabs under `Assets/`.** `ForceSamePrefabs: 1`
+folds every registered prefab's `GlobalObjectIdHash` into the config hash a joining client sends, so
+any difference in the *set* is a hard refusal with no reason string. A prefab under a package's
+`Editor/` folder exists in the Editor and not in a player build, which is why Editor↔device could
+never connect until the eight Meta Building Blocks entries were pruned. `Assets/Editor/NetworkPrefabListGuard.cs`
+turns Netcode's auto-generator off and **fails the build** if one gets back in. The same hash also
+moves whenever `Player.prefab` is edited, so **flash both headsets from the same build, every time.**
 
 **`NetworkVariable` write permission is the security boundary.** `spawnSlot`, `playerName`,
 `roomOwner`, and everything on `RoomAnchor` are **server-written**; hand/head poses are
@@ -950,8 +1197,13 @@ and `PlateauGame` despawn and respawn on a reconnect.
 - `MenuControl.worldRoot` is unassigned in every scene, so the board is not hidden behind an open
   menu. Pre-existing and not scene-specific — it was already unset before `PersistentRig` existed.
 - Root clutter, not source: `BoardGames.apk`, `build/`,
-  `MRBoardGame_BurstDebugInformation_DoNotShip/`, three `.sln` files,
-  `Assets/Scenes/SampleScene/` (stale baked lighting).
+  `MRBoardGame_BurstDebugInformation_DoNotShip/`, three `.sln` files (`MRBoardGame`,
+  `MRBoardGame2`, `MRBoardGameTemplate`), `Assets/Scenes/SampleScene/` (stale baked lighting) —
+  and **`BoardAnchor.dll`, a tracked binary at the repo root.** That last one is a trap for
+  anything invoking `csc` from the project root: without an explicit `-out:`, Roslyn names the
+  output after the first source file, so compiling a file list beginning with `BoardAnchor.cs`
+  silently overwrites it and it turns up as a modified binary in `git status` with no obvious
+  cause. Always pass `-out:` pointing somewhere outside the repo.
 
 ## Design docs
 
@@ -962,7 +1214,11 @@ are marked applied, corrected, or out of scope — check the code before trustin
 | --- | --- |
 | [`plateauRules.md`](plateauRules.md) | The game's rules. Starting forces and movement are implemented; everything else is still the design target. It says 33 plateaus and the scene has 41 — the code counts children, so the doc is the stale one. |
 | [`BASHUpdate.md`](BASHUpdate.md) | **Applied.** The plan for porting BASH (`D:\Unity_Stuff\BASH_U6`) in as a third game: the GUID collisions a bulk copy would cause, the world-space → `World Root` local conversion its networking needs, and the scene to build. Its §14 records where the port ended up different from the plan. |
+| [`BASHRulesUpdate.md`](BASHRulesUpdate.md) | **Applied.** The rules rework that replaced BASH's joystick-steered shot with spin-aimed movement plus the boat/plane artillery arc — the two orthogonal halves of the four pieces, the `Phase` state machine, and the fixed-segment arc. |
 | [`bridgeMovementUpdate.md`](bridgeMovementUpdate.md) | **Applied.** Re-laying a bridge that is already on the board: the local plateau system it may move around, why the search seed (not the graph) was the bug, and the switch of both bridge RPCs from a destination plateau to a gap index. Supersedes `bigFixes1.md` §4. |
+| [`bigFixes1.md`](bigFixes1.md) | **§1 applied late** (see `quest_networking_plan.md`), §4 superseded by `bridgeMovementUpdate.md`. Its §1 is still the reference for *why* `ForceSamePrefabs` plus a package `Editor/` prefab makes Editor↔device connection structurally impossible. |
+| [`bugFixes2.md`](bugFixes2.md) | **Applied.** The four defects from the first two-headset session (2026-09-05): the 0.25 m anchor-height guard rejecting a real floor-calibration difference, the 6.5 m `TagsRoot` label offsets, the spawn-menu open delay cancelling the board selection, and BASH serving only ring slots 0-3. Its §0 is the "flash both headsets from the same build" warning. |
+| [`quest_networking_plan.md`](quest_networking_plan.md) | **Partly applied.** The Quest 3 → Quest 3S join failure: why the original "switch DTLS to UDP" diagnosis did not hold, the double-join defect in `GameController` that did, the connection instrumentation (`NetworkProbe`), and the prefab-list prune from `bigFixes1.md` §1. The cause is still unconfirmed — its last section is the measurement to take in two headsets. |
 | [`anchoringUpdate.md`](anchoringUpdate.md) | One anchor per room, the `World Root` content frame, the two-grip world grab. |
 | [`fixAnchoring.md`](fixAnchoring.md) | Colocated alignment, the nametag and hand-cone defects, the two-cones-and-a-name avatar. |
 | [`updates1.md`](updates1.md) | Earlier pass — root causes and ordering. |
