@@ -1,6 +1,8 @@
 using Unity.Netcode;
+using Unity.XR.CoreUtils;
 using UnityEngine;
 using UnityEngine.SceneManagement;
+using UnityEngine.XR;
 
 public class CameraController2 : MonoBehaviour
 {
@@ -13,14 +15,22 @@ public class CameraController2 : MonoBehaviour
     public float RotationSpeed;
     public float MovingSpeed;
 
-    // A shared anchor placed on the floor should localize within a few centimetres of this headset's
-    // own floor. Anything past this is a tracking failure, not a floor-calibration difference.
-    public float MaxAnchorHeightDisagreement = 0.25f;
+    [Tooltip("Reject an anchor that localizes further than this from this headset's own floor. " +
+             "This is a TRACKING-failure bound, not a floor-calibration one: a headset that has " +
+             "never had Space Setup run can be half a metre out, and taking the anchor's height is " +
+             "exactly how that gets corrected. The startup race is caught separately, by asking " +
+             "XROrigin whether it is in Floor mode yet.")]
+    public float MaxAnchorHeightDisagreement = 0.6f;
 
     // Seconds between repeats of the anchor-height warning. At frame rate this is a log flood, and
     // the interesting events are "it started" and "it stopped", not the sixty in between.
     public float HeightWarningIntervalSeconds = 5f;
     private float nextHeightWarningAt;
+    private float nextOriginModeWarningAt;
+
+    // XROrigin is on this same GameObject (see CLAUDE.md, The persistent rig). Cached in Start()
+    // because AlignRigToAnchor runs every frame while colocated.
+    private XROrigin origin;
 
     // Static because everything that cares — PlayerControls, WorldGrab, the probe, the locomotion
     // gate — needs it without holding a reference to the rig, and the rig is destroyed and rebuilt
@@ -46,6 +56,16 @@ public class CameraController2 : MonoBehaviour
     {
         anchorPosition = transform.position;
         anchorRotation = transform.rotation;
+
+        origin = GetComponent<XROrigin>();
+        if (origin == null)
+        {
+            // Not fatal — AlignRigToAnchor falls back to the height guard alone, which is what it
+            // did before. Worth saying, because it means the startup race is unguarded.
+            Debug.LogWarning("CameraController2: no XROrigin on " + name + ", so alignment cannot " +
+                             "tell a Camera Offset that has not been zeroed yet from a real floor " +
+                             "disagreement.");
+        }
 
         if (head == null && Camera.main != null)
         {
@@ -267,6 +287,22 @@ public class CameraController2 : MonoBehaviour
             return;
         }
 
+        // XROrigin.MoveOffsetHeight only zeroes Camera Offset once the input subsystem reports
+        // Floor mode; until then every pose in this method is off by the serialized CameraYOffset
+        // (1.36144) and no alignment computed from it means anything. Ask the mode directly rather
+        // than inferring it from a height — that inference is what forced
+        // MaxAnchorHeightDisagreement down to a value too tight to absorb a real floor-calibration
+        // difference, which is the thing this method is supposed to CORRECT rather than reject.
+        //
+        // Both are driven by the same event (XROrigin.OnInputSubsystemTrackingOriginUpdated calls
+        // MoveOffsetHeight), so "the mode reads Floor" and "Camera Offset has been zeroed" are the
+        // same fact, not two that could disagree.
+        if (origin != null && origin.CurrentTrackingOriginMode != TrackingOriginModeFlags.Floor)
+        {
+            WarnOriginModeNotFloor();
+            return;
+        }
+
         // Yaw only. A full-rotation alignment would tip the board off the real floor, and pitch and
         // roll from an anchor are noise: the runtime gravity-aligns them and what is left is error.
         Vector3 flatForward = anchor.forward;
@@ -304,16 +340,35 @@ public class CameraController2 : MonoBehaviour
             // previous frame's pose is strictly better than any fallback: a board stale by one frame
             // is invisible, a board snapping to the floor and back is not.
             //
-            // This also catches the startup race. XROrigin.MoveOffsetHeight only zeroes Camera
-            // Offset once the input subsystem reports Floor mode, so any alignment attempted before
-            // that lands is off by the serialized 1.36144 and is correctly rejected until it
-            // resolves. One warning at startup and never again is that, and nothing is wrong.
+            // At 0.6 m this is a tracking-failure bound and nothing else. The startup race it used
+            // to double as a guard for is caught above, by the tracking-origin-mode check — and
+            // catching it here instead is what sized this constant at 0.25 m, tight enough to
+            // reject the floor-calibration difference the height correction below exists to fix.
             WarnHeightDisagreement(anchorAboveMyFloor);
             return;
         }
 
         transform.SetPositionAndRotation(newPos, deltaRot * transform.rotation);
         SetAligned(true);
+    }
+
+    /// <summary>
+    /// The mode check above returns every frame while it holds, and a silent permanent return is
+    /// exactly the failure this whole change is about. Same throttle as the height warning: the
+    /// interesting events are "it started" and "it stopped", not the sixty a second in between.
+    /// One line at startup and never again is normal — the subsystem takes a moment to report.
+    /// </summary>
+    private void WarnOriginModeNotFloor()
+    {
+        if (Time.realtimeSinceStartup < nextOriginModeWarningAt)
+        {
+            return;
+        }
+        nextOriginModeWarningAt = Time.realtimeSinceStartup + HeightWarningIntervalSeconds;
+
+        Debug.LogWarning("AlignRigToAnchor: XROrigin is in " + origin.CurrentTrackingOriginMode +
+                         " mode, not Floor, so Camera Offset has not been zeroed and every pose " +
+                         "here is off by CameraYOffset. Not aligning until it resolves.");
     }
 
     private void WarnHeightDisagreement(float anchorAboveMyFloor)
@@ -337,6 +392,14 @@ public class CameraController2 : MonoBehaviour
             return;                     // idempotent: this runs sixty times a second
         }
         LocalIsAligned = value;
+
+        // Nothing else tells a player which of the two states they are in, and "the players were
+        // not aligned in the room" is indistinguishable from inside a headset from "nobody placed
+        // an anchor". DebugLog mirrors every Application.logMessageReceived into the in-headset
+        // box, so this lands where it can be read without adb.
+        Debug.Log(value ? "Colocation: aligned to the room anchor."
+                        : "Colocation: alignment LOST — this headset is now in its own room.");
+
         if (LocalAlignmentChanged != null)
         {
             LocalAlignmentChanged();

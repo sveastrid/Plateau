@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Collections.Generic;
 using Unity.Netcode;
 using UnityEngine;
 
@@ -14,8 +15,12 @@ using UnityEngine;
 /// their own base back rather than a duplicate of somebody else's. It is also the colour index,
 /// exactly as it is in Chasms.
 ///
-/// The first four seats play; seats 4-11 get a ring slot and spectate. NetworkBaseControl is
-/// never resolved for them, so ControlListener tolerates a null base throughout.
+/// spawnSlot is a place on PlayerRing's TWELVE-slot ring, not a base index, and the two are not
+/// the same number: PickFreeSlot hands out the middle of the widest gap, so the first four players
+/// get slots 0, 6, 3, 9. Treating that as a base index is what gave the second player into a
+/// two-player game no base at all. BaseForRingSlot below is the map, and the four playing slots are
+/// the four a base actually stands at. Everything past those spectates: NetworkBaseControl is never
+/// resolved for them, so ControlListener tolerates a null base throughout.
 /// </summary>
 public class SpawnManager : NetworkBehaviour
 {
@@ -39,9 +44,33 @@ public class SpawnManager : NetworkBehaviour
 
     static readonly float[] SeatYaw = { 0f, 180f, -90f, 90f };
 
+    /// <summary>
+    /// Ring slot -> base index, -1 for a slot with no base behind it. NOT the identity:
+    /// PlayerControls.spawnSlot is a place on PlayerRing's twelve-slot ring, and PickFreeSlot
+    /// deliberately hands out the middle of the widest gap -- 0, 6, 3, 9 for the first four
+    /// players -- so treating it as a base index gave the second player no base at all.
+    ///
+    /// The four entries are not a convention, they are a measurement: SeatPosition/SeatYaw above
+    /// and PlayerRing.SlotPosition/SlotRotation agree on position AND facing for exactly these four
+    /// slots. A player's base is therefore the one they are standing behind, which is the only
+    /// arrangement that reads correctly around a real table. Re-derive this table if either set of
+    /// numbers ever moves.
+    ///
+    /// Because PickFreeSlot hands out 0, 6, 3, 9 in that order, the first four joiners still get
+    /// bases 0, 1, 2, 3 in join order and the fifth still spectates.
+    /// </summary>
+    static readonly int[] BaseForRingSlot = { 0, -1, -1, 2, -1, -1, 1, -1, -1, 3, -1, -1 };
+
+    public static int BaseIndexForRingSlot(int slot) =>
+        slot >= 0 && slot < BaseForRingSlot.Length ? BaseForRingSlot[slot] : -1;
+
     // Server-side. Which NetworkObject is serving which seat, so a seat is never handed a second
     // base and a reconnecting player gets the one already standing there.
     readonly NetworkObject[] baseBySeat = new NetworkObject[PlayingSeats];
+
+    // Server-side scratch for ServeSeats, reused across ticks so a 4 Hz poll allocates nothing.
+    readonly bool[] claimedThisTick = new bool[PlayingSeats];
+    readonly List<ulong> unplacedClients = new List<ulong>();
 
     // A tick, not a hook on OnClientConnectedCallback: spawnSlot is assigned inside
     // PlayerControls.OnNetworkSpawn, which can run after this component's OnNetworkSpawn. This is
@@ -81,6 +110,21 @@ public class SpawnManager : NetworkBehaviour
         ServeSeats();
     }
 
+    /// <summary>
+    /// Two passes, and the order between them is the whole point of splitting them.
+    ///
+    /// Pass 1 is the rule: a player standing on one of the four ring slots that a base stands at
+    /// gets THAT base, whoever else is in the room and in whatever order Netcode happens to
+    /// enumerate the clients.
+    ///
+    /// Pass 2 is the fallback, and it only ever fires for a ring fragmented by mid-game departures
+    /// -- five players, then the one at slot 0 leaves, and PickFreeSlot answers 11 for the next
+    /// joiner rather than 0. Rather than leave base 0 standing empty while a player has none, hand
+    /// out the lowest base nobody claimed in pass 1. The cost is that such a player is standing
+    /// somewhere other than behind their own base, which is strictly better than not playing. Doing
+    /// it after pass 1 is what stops a leftover player taking a base its own ring slot entitles
+    /// somebody else to.
+    /// </summary>
     void ServeSeats()
     {
         NetworkObject frame = BashRoot.SpawnParent;
@@ -89,6 +133,12 @@ public class SpawnManager : NetworkBehaviour
         {
             return;                     // the scene is not up yet; try again next tick
         }
+
+        for (int i = 0; i < PlayingSeats; i++)
+        {
+            claimedThisTick[i] = false;
+        }
+        unplacedClients.Clear();
 
         foreach (var entry in nm.ConnectedClients)
         {
@@ -104,27 +154,92 @@ public class SpawnManager : NetworkBehaviour
                 continue;
             }
 
-            int seat = player.spawnSlot.Value;
-            if (seat < 0 || seat >= PlayingSeats)
+            int slot = player.spawnSlot.Value;
+            if (slot < 0)
             {
-                continue;               // not seated yet, or a spectator
+                continue;               // not seated on the ring yet; try again next tick
             }
 
-            NetworkObject existing = baseBySeat[seat];
-            if (existing != null && existing.IsSpawned)
+            int seat = BaseIndexForRingSlot(slot);
+            if (seat < 0)
             {
-                // The seat was vacated and refilled. The base is still standing; hand it to
-                // whoever holds the seat now, so their NetworkBaseControl.OnGainedOwnership
-                // wires it to their own Controls.
-                if (existing.OwnerClientId != entry.Key)
-                {
-                    existing.ChangeOwnership(entry.Key);
-                }
+                unplacedClients.Add(entry.Key);
                 continue;
             }
 
-            SpawnBase(seat, entry.Key, frame);
+            claimedThisTick[seat] = true;
+            Serve(seat, entry.Key, frame);
         }
+
+        foreach (ulong client in unplacedClients)
+        {
+            // Keep the base this client was already handed rather than re-deriving one from
+            // scratch. ConnectedClients enumerates in insertion order today, but nothing promises
+            // it, and a fallback base changing hands between two players every tick would re-run
+            // OnGainedOwnership on both of them four times a second.
+            int seat = UnclaimedSeatOwnedBy(client);
+            if (seat < 0)
+            {
+                seat = FirstUnclaimedSeat();
+            }
+            if (seat < 0)
+            {
+                continue;               // all four bases are spoken for: this player spectates
+            }
+
+            claimedThisTick[seat] = true;
+            Serve(seat, client, frame);
+        }
+    }
+
+    /// <summary>A base this client already owns that pass 1 did not claim for somebody else.</summary>
+    int UnclaimedSeatOwnedBy(ulong client)
+    {
+        for (int i = 0; i < PlayingSeats; i++)
+        {
+            if (claimedThisTick[i])
+            {
+                continue;
+            }
+
+            NetworkObject standing = baseBySeat[i];
+            if (standing != null && standing.IsSpawned && standing.OwnerClientId == client)
+            {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    int FirstUnclaimedSeat()
+    {
+        for (int i = 0; i < PlayingSeats; i++)
+        {
+            if (!claimedThisTick[i])
+            {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /// <summary>Give this client the base for that index, spawning it if it is not up yet.</summary>
+    void Serve(int seat, ulong owner, NetworkObject frame)
+    {
+        NetworkObject existing = baseBySeat[seat];
+        if (existing != null && existing.IsSpawned)
+        {
+            // The seat was vacated and refilled. The base is still standing; hand it to
+            // whoever holds the seat now, so their NetworkBaseControl.OnGainedOwnership
+            // wires it to their own Controls.
+            if (existing.OwnerClientId != owner)
+            {
+                existing.ChangeOwnership(owner);
+            }
+            return;
+        }
+
+        SpawnBase(seat, owner, frame);
     }
 
     void SpawnBase(int seat, ulong owner, NetworkObject frame)
@@ -191,7 +306,7 @@ public class SpawnManager : NetworkBehaviour
     /// </summary>
     public void SpawnNetworkCannonLine(Vector3[] linePoints, float lifetime = 0f)
     {
-        SpawnNetworkCannonLineServerRpc(linePoints, LocalSeat(), lifetime);
+        SpawnNetworkCannonLineServerRpc(linePoints, LocalBaseIndex(), lifetime);
     }
 
     [ServerRpc(RequireOwnership = false)]
@@ -263,12 +378,23 @@ public class SpawnManager : NetworkBehaviour
     // ------------------------------------------------------------------ seats
 
     /// <summary>
-    /// This client's seat, or -1 before the server has seated them. Same resolution
-    /// MenuControl.ResolveMyPlayer and PlateauGame.LocalSeat use — asking Netcode directly rather
-    /// than depending on rebind order, because BASH's own PlayerControls pushed itself into the
-    /// SpawnManager and this project's does not.
+    /// This client's BASE index (0-3), or -1 before the server has seated them and for a
+    /// spectator. Same resolution MenuControl.ResolveMyPlayer and PlateauGame.LocalSeat use —
+    /// asking Netcode directly rather than depending on rebind order, because BASH's own
+    /// PlayerControls pushed itself into the SpawnManager and this project's does not.
+    ///
+    /// It is used for colour, and returning the raw ring slot is why two players' trails used to
+    /// come out the same: LineControls.ChangeMaterial clamps into 0..3, so slots 6 and 9 both
+    /// clamped to 3.
+    ///
+    /// Derived from the ring slot, i.e. from pass 1 of ServeSeats. A player who got a base from
+    /// pass 2's unclaimed-base fallback answers -1 here and their trails clamp to colour 0 — a
+    /// cosmetic mismatch confined to the same five-players-and-a-departure case the fallback
+    /// exists for. Fixing it properly means the server telling each client which base it was
+    /// actually handed, which is not worth a NetworkVariable until spectator seats are tested at
+    /// all (see CLAUDE.md, Known rough edges).
     /// </summary>
-    public static int LocalSeat()
+    public static int LocalBaseIndex()
     {
         NetworkManager nm = NetworkManager.Singleton;
         if (nm == null || nm.LocalClient == null || nm.LocalClient.PlayerObject == null)
@@ -277,6 +403,6 @@ public class SpawnManager : NetworkBehaviour
         }
 
         PlayerControls player = nm.LocalClient.PlayerObject.GetComponent<PlayerControls>();
-        return player != null ? player.spawnSlot.Value : -1;
+        return player != null ? BaseIndexForRingSlot(player.spawnSlot.Value) : -1;
     }
 }

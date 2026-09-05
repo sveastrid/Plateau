@@ -287,7 +287,7 @@ public class ControlListener : MonoBehaviour
         line.transform.localScale = Vector3.one;
 
         newCannonLineControl = line.GetComponent<LineControls>();
-        newCannonLineControl.ChangeMaterial(SpawnManager.LocalSeat());
+        newCannonLineControl.ChangeMaterial(SpawnManager.LocalBaseIndex());
         newCannonLineControl.ConnectLineToNetworkBase(netBaseControl);
         newCannonLineControl.checkForCollisions = true;
 
@@ -437,7 +437,7 @@ public class ControlListener : MonoBehaviour
         line.transform.localScale = Vector3.one;
 
         arcLineControl = line.GetComponent<LineControls>();
-        arcLineControl.ChangeMaterial(SpawnManager.LocalSeat());
+        arcLineControl.ChangeMaterial(SpawnManager.LocalBaseIndex());
         arcLineControl.ConnectLineToNetworkBase(netBaseControl);
         arcLineControl.checkForCollisions = false;   // the hit test is explicit, in ResolveArc
 

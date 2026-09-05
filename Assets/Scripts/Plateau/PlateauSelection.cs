@@ -139,8 +139,14 @@ public class PlateauSelection : MonoBehaviour
             // The spawn menu borrows the right trigger the same way Menu1 does while it is open
             // (Playable already stands down for it via the LeftGrip check below), but unlike Menu1
             // it must not drop whatever is currently selected -- its "-" key acts on exactly that
-            // piece (TryGetSelectedStack). Everything else that fails Playable() still hard-cancels.
-            if (spawnMenu == null || !spawnMenu.IsOpen)
+            // piece (TryGetSelectedStack) and its Gemheart/Chasmfiend keys on that plateau
+            // (TryGetSelectedPlateau). Everything else that fails Playable() still hard-cancels.
+            //
+            // IsOpenOrOpening, not IsOpen: the menu waits 0.15 s on the grip before it opens, so
+            // for about ten frames the grip is down and the menu is still shut -- which is exactly
+            // where this cancel used to land, leaving the state Idle by the time a key was
+            // pressable.
+            if (spawnMenu == null || !spawnMenu.IsOpenOrOpening)
             {
                 Cancel();
             }

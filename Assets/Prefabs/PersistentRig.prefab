@@ -2375,7 +2375,7 @@ MonoBehaviour:
   RotationAngle: 20
   RotationSpeed: 0.5
   MovingSpeed: 3
-  MaxAnchorHeightDisagreement: 0.25
+  MaxAnchorHeightDisagreement: 0.6
   HeightWarningIntervalSeconds: 5
 --- !u!114 &6365472988943413863
 MonoBehaviour:
@@ -2575,7 +2575,7 @@ MonoBehaviour:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 1719918564133500986}
-  m_Enabled: 0
+  m_Enabled: 1
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 2b5949ef803645e28080f006eb206f0d, type: 3}
   m_Name: 

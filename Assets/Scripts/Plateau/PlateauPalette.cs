@@ -16,8 +16,11 @@ public static class PlateauPalette
     {
         int s = seat < 0 ? 0 : seat % PlateauConst.MaxSeats;
 
-        // Stride 5 is coprime with 12, so consecutive seats land far apart on the wheel. Seats
-        // 0-3 — the order PlayerRing.PickFreeSlot hands them out — get 0, 150, 300 and 90 degrees.
+        // Stride 5 is coprime with 12, so consecutive seats land far apart on the wheel. The first
+        // four players get slots 0, 6, 3 and 9 — PlayerRing.PickFreeSlot hands out the middle of
+        // the widest gap, NOT 0, 1, 2, 3 — which land on 0, 180, 90 and 270 degrees. Quarters of
+        // the wheel for the four people most likely to be in the room, which is luck rather than
+        // design, but check it again before changing the stride.
         float hue = ((s * 5) % PlateauConst.MaxSeats) / (float)PlateauConst.MaxSeats;
 
         // Alternating value, so neighbouring seats differ in brightness as well as hue. Passthrough

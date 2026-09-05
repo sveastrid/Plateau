@@ -7,9 +7,9 @@ using UnityEngine;
 /// BY ITSELF activates the menu; letting go, pressing the right grip too, or opening
 /// Menu1 deactivates it again.
 ///
-/// Unlike Menu1 this never drops the player's current board selection while it is open
-/// (PlateauSelection.Update() special-cases IsOpen for exactly this), because its "-" key acts on
-/// whatever piece the player already has selected on the board.
+/// Unlike Menu1 this never drops the player's current board selection while it is opening or open
+/// (PlateauSelection.Update() special-cases IsOpenOrOpening for exactly this), because its "-" key
+/// acts on whatever piece the player already has selected on the board.
 ///
 /// Tinted with the local player's own seat colour (PlateauPalette) every frame it is open, purely
 /// so a player can tell at a glance that the menu hanging off their own wrist is theirs. Purely
@@ -21,8 +21,11 @@ using UnityEngine;
 /// PieceKind -- neither is an implemented piece kind yet -- so their keys fall through to the
 /// default case and are deliberately inert, the same contract as an unwired key in Menu1.
 ///
-/// Order 23: must execute before PlateauSelection (25) so that the menu opens before PlateauSelection
-/// checks IsOpen, preventing the selection from being cleared when the left grip is pressed.
+/// Order 23: must execute before PlateauSelection (25) so that IsOpenOrOpening is already up to
+/// date for this frame when PlateauSelection reads it. The ordering on its own is NOT what protects
+/// the selection any more -- IsOpenOrOpening is. The 0.15 s open debounce below means the menu is
+/// still closed for about ten frames after the grip goes down, and running first with IsOpen still
+/// false would only have let PlateauSelection cancel earlier.
 /// </summary>
 [DefaultExecutionOrder(23)]
 public class PlateauSpawnMenu : MonoBehaviour
@@ -46,6 +49,19 @@ public class PlateauSpawnMenu : MonoBehaviour
     /// <summary>True while the menu is active on the hand. Read by PlateauSelection.</summary>
     public bool IsOpen => menuInstance != null && menuInstance.activeSelf;
 
+    /// <summary>
+    /// True while the menu is up OR while the left-grip-only gesture that opens it is being timed
+    /// out. PlateauSelection stands down for a held grip but must not CANCEL for one that is
+    /// opening this menu -- the menu's "-" and Gemheart keys act on exactly the selection it would
+    /// be throwing away. IsOpen alone is not enough: the 0.15 s debounce below means the menu is
+    /// still closed for about ten frames after the grip goes down, and the cancel lands in there.
+    ///
+    /// The timer is only ever non-zero for a LEFT grip held BY ITSELF with Menu1 shut (see
+    /// isLeftGripHeld in Update), so this cannot swallow the cancel that a two-grip world grab or
+    /// opening Menu1 is supposed to cause: either of those resets the timer to 0 on the same frame.
+    /// </summary>
+    public bool IsOpenOrOpening => IsOpen || leftGripTimer > 0f;
+
     void OnDisable()
     {
         if (menuInstance != null)
@@ -66,6 +82,11 @@ public class PlateauSpawnMenu : MonoBehaviour
     {
         if (!Bind())
         {
+            // The timer has to go with the binding. Hold the left grip across a game switch and a
+            // surviving timer would open the menu on the first frame after the rebind rather than
+            // 0.15 s later -- and would leave IsOpenOrOpening true for a scene with no menu in it.
+            leftGripTimer = 0f;
+
             if (menuInstance != null)
             {
                 menuInstance.SetActive(false);

@@ -19,6 +19,8 @@ public class PlayerControls : NetworkBehaviour
     public Transform usernameTransform;
     public TextMeshPro scoreLabel;
     public Transform scoreLabelTransform;
+    public Transform tagsRoot;
+    public Transform gemheartLabelTransform;
     public Transform myCam;
     public RelayVivox relayVivoxInfo;
     public Transform localLeft;
@@ -42,9 +44,10 @@ public class PlayerControls : NetworkBehaviour
     // passthrough, not the top of the virtual one — the virtual head is never drawn.
     public float NameTagAboveEyes = 0.28f;
 
-    // How far below the nametag the held-gemheart score sits. Only shown while a Plateau game is
-    // live (PlateauGame.Instance) — this is that game's own score, not a general player stat.
-    public float ScoreTagBelowName = 0.06f;
+    // NOTE: ScoreTagBelowName used to live here. The labels now hang off TagsRoot and are laid out
+    // in Player.prefab, which is better: the offsets are visible in the Scene view instead of being
+    // a number in a script that nothing reads. NameTagAboveEyes stays — Update() still uses it to
+    // put TagsRoot itself above the head.
 
     // Master switch for the remote avatar's head and body. Off: they never render, for anybody.
     // A remote player is two cones and a name. In passthrough their real head and body are
@@ -88,8 +91,18 @@ public class PlayerControls : NetworkBehaviour
     public override void OnNetworkSpawn()
     {
         // --- Prefab-local. Resolved once; these children never go away. ---
-        usernameTransform = FindChild("Username");
-        scoreLabelTransform = FindChild("ScoreTag");
+        tagsRoot = FindChild("TagsRoot");
+        if (tagsRoot != null)
+        {
+            usernameTransform = tagsRoot.Find("Username");
+            scoreLabelTransform = tagsRoot.Find("ScoreTag");
+            gemheartLabelTransform = tagsRoot.Find("Gemheart");
+        }
+        else
+        {
+            usernameTransform = FindChild("Username");
+            scoreLabelTransform = FindChild("ScoreTag");
+        }
         playerLeft        = FindChild("PlayerLeft");
         playerRight       = FindChild("PlayerRight");
         face              = FindChild("mainFace");
@@ -182,26 +195,23 @@ public class PlayerControls : NetworkBehaviour
     /// </summary>
     private void UpdateScoreTag()
     {
-        if (scoreLabelTransform == null || scoreLabel == null)
-        {
-            return;
-        }
-
+        bool isChasmGame = SceneManager.GetActiveScene().name == GameRoutes.PlateauSceneName;
         PlateauGame game = PlateauGame.Instance;
-        if (game == null || !game.IsSpawned)
+        bool shouldShow = isChasmGame && game != null && game.IsSpawned;
+
+        if (scoreLabelTransform != null && scoreLabel != null)
         {
-            scoreLabelTransform.gameObject.SetActive(false);
-            return;
+            scoreLabelTransform.gameObject.SetActive(shouldShow);
+            if (shouldShow)
+            {
+                scoreLabel.SetText(game.ScoreForSeat(spawnSlot.Value).ToString());
+            }
         }
-
-        scoreLabelTransform.gameObject.SetActive(true);
-        scoreLabel.SetText(game.ScoreForSeat(spawnSlot.Value).ToString());
-
-        scoreLabelTransform.position = smoothFacePos +
-            new Vector3(0f, FaceBelowEyes + NameTagAboveEyes - ScoreTagBelowName, 0f);
-
-        Vector3 scoreLookDirection = myCam.position - scoreLabelTransform.position;
-        scoreLabelTransform.rotation = Quaternion.LookRotation(-scoreLookDirection);
+        
+        if (gemheartLabelTransform != null)
+        {
+            gemheartLabelTransform.gameObject.SetActive(shouldShow);
+        }
     }
 
     private void HandleNameChanged(FixedString32Bytes oldVal, FixedString32Bytes newVal)
@@ -373,11 +383,18 @@ public class PlayerControls : NetworkBehaviour
             // Drive it off the head pose instead, which is already on the wire. Position before
             // rotation: the billboard is derived from where the tag IS, so computing it first also
             // removes a one-frame lag that was there before.
-            usernameTransform.position = smoothFacePos +
-                new Vector3(0f, FaceBelowEyes + NameTagAboveEyes, 0f);
-
-            Vector3 lookDirection = myCam.position - usernameTransform.position;
-            usernameTransform.rotation = Quaternion.LookRotation(-lookDirection);
+            if (tagsRoot != null)
+            {
+                tagsRoot.position = smoothFacePos + new Vector3(0f, FaceBelowEyes + NameTagAboveEyes, 0f);
+                Vector3 lookDirection = myCam.position - tagsRoot.position;
+                tagsRoot.rotation = Quaternion.LookRotation(-lookDirection);
+            }
+            else if (usernameTransform != null)
+            {
+                usernameTransform.position = smoothFacePos + new Vector3(0f, FaceBelowEyes + NameTagAboveEyes, 0f);
+                Vector3 lookDirection = myCam.position - usernameTransform.position;
+                usernameTransform.rotation = Quaternion.LookRotation(-lookDirection);
+            }
 
             UpdateScoreTag();
 
