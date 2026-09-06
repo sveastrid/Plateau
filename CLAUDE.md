@@ -20,15 +20,15 @@ Each area below is a closed world. Read this file plus the one row you need — 
 | Shared platform — rig, colocation, world grab, avatars, menus, input, passthrough | [`Assets/Scripts/CLAUDE.md`](Assets/Scripts/CLAUDE.md) + `Assets/Scripts/*.cs` |
 | **Plateau** (menu key `Chasms`, scene `ChasmGame`) | [`Assets/Scripts/Plateau/CLAUDE.md`](Assets/Scripts/Plateau/CLAUDE.md) + `Assets/Scripts/Plateau/` |
 | **BASH** (menu key `BASH`, scene `BashGame`) | [`Assets/Scripts/Bash/CLAUDE.md`](Assets/Scripts/Bash/CLAUDE.md) + `Assets/Scripts/Bash/` |
-| **Stairs** (menu key `Stairs`, scene `StairsGame`) | Nothing — it is a placeholder `Cube` under `World Root > Board`, with no scripts |
+| **Stairs** (menu key `Stairs`, scene `StairsGame`) | [`Assets/Scripts/Stairs/CLAUDE.md`](Assets/Scripts/Stairs/CLAUDE.md) + `Assets/Scripts/Stairs/` |
 | Lobby / join flow | `GameController.cs`, `RelayVivox.cs`, `OpeningScene.unity` |
 
-Nothing in `Assets/Scripts/Plateau/` should be needed to work on BASH, or the reverse. If you find
-yourself reading the other game, that is a coupling bug — say so rather than working around it.
+Nothing in one game's folder should be needed to work on another. If you find yourself reading a
+second game, that is a coupling bug — say so rather than working around it.
 
 **Do not search `Library/`, `Temp/`, `obj/`, `build/`, `.utmp/`, `.vs/`.** `Library/` alone is 25 GB
 and holds 5,948 `Editor/*.cs` files that will drown any unscoped glob. Every `.cs` under `Assets/` is
-first-party and there are only **52** of them, totalling ~0.5 MB.
+first-party and there are only **64** of them, totalling ~0.6 MB.
 
 ## Working with an agent here
 
@@ -37,9 +37,10 @@ something in that folder is first touched. "In BASH, the trail does not despawn 
 BASH's 210 lines and never Plateau's; "fix the trail despawn bug" makes the agent go looking, and it
 may read both games to find out where that lives.
 
-**An agent saying it needs the other game is a bug report, not a request.** `MRBoardGame.Bash`
-cannot reference `MRBoardGame.Plateau` and neither can reach the other's internals. Shared code that
-needs to know something about a game goes through `IGameSession`.
+**An agent saying it needs another game is a bug report, not a request.** `MRBoardGame.Bash`,
+`MRBoardGame.Plateau` and `MRBoardGame.Stairs` cannot reference each other and none can reach
+another's internals. Shared code that needs to know something about a game goes through
+`IGameSession`.
 
 **Compiler messages come back from `Unity_ReadConsole` typed as `Log`, not `Error`.** Filtering on
 severity returns zero entries while the build is genuinely broken — match the text `error CS`
@@ -137,15 +138,16 @@ agree; changing one means changing the other.
 - **No CLI tooling, no CI, no tests, no package scripts.** All builds go through the Editor
   (File > Build Settings, Android). `com.unity.test-framework` is in the manifest but there are no
   test assemblies and no `Tests/` folders.
-- **Four assemblies, and the boundary is the point.** `MRBoardGame.Shared` (`Assets/Scripts/`)
-  references neither game; `MRBoardGame.Plateau` and `MRBoardGame.Bash` each reference Shared and
-  **not each other**; `MRBoardGame.Editor` is Editor-only. `Assembly-CSharp` now holds no
-  first-party code at all. A game reaching into another game, or shared code reaching into a game,
-  is a compile error instead of something you discover in a headset — which is how BASH was caught
-  calling `PlateauBoard.FindDescendant`. Editing one game recompiles only that assembly.
+- **Five assemblies, and the boundary is the point.** `MRBoardGame.Shared` (`Assets/Scripts/`)
+  references no game; `MRBoardGame.Plateau`, `MRBoardGame.Bash` and `MRBoardGame.Stairs` each
+  reference Shared and **not each other**; `MRBoardGame.Editor` is Editor-only. `Assembly-CSharp`
+  now holds no first-party code at all. A game reaching into another game, or shared code reaching
+  into a game, is a compile error instead of something you discover in a headset — which is how BASH
+  was caught calling `PlateauBoard.FindDescendant`. Editing one game recompiles only that assembly.
 - **C# can still be compile-checked headlessly**, without opening the Editor or taking the project
   lock. Since the assembly split there is one `.csproj` per assembly — `MRBoardGame.Shared.csproj`,
-  `MRBoardGame.Plateau.csproj`, `MRBoardGame.Bash.csproj`, `MRBoardGame.Editor.csproj`. Take
+  `MRBoardGame.Plateau.csproj`, `MRBoardGame.Bash.csproj`, `MRBoardGame.Stairs.csproj`,
+  `MRBoardGame.Editor.csproj`. Take
   `<DefineConstants>` and the `<HintPath>` references from the one you are checking (the Editor
   regenerates them; the `<Compile Include=>` list goes stale, so glob the folder yourself), write a
   csc response file, and run Unity's **.NET** Roslyn —
@@ -207,10 +209,18 @@ working tree and landed in **one commit** on the `mr-passthrough` branch.
 | Scene | Role |
 | --- | --- |
 | `OpeningScene` | Lobby. VR keyboard, room code + username entry, hosts or joins. Holds the **Network Manager** and the one **`PersistentRig`** instance. |
-| `StairsGame` | Default game. `World Root > Board > Cube` — a placeholder. |
+| `StairsGame` | Default game. `World Root > Board > Cells > Row1…Row8`, eight `Cube`/`Cube (1…7)` cells each — an 8×8 grid — plus `Walls`, and `World Root > Stairs Root` (the game) beside them. |
 | `ChasmGame` | Plateau: 41 `Plateau` and 81 `Bridge Spots` instances under `World Root > Board`. |
 | `BashGame` | BASH: a 3 m square of water inside four walls, four islands, a base per player. |
 | `GameScene` | **Legacy.** In the build list but absent from `GameRoutes`, so nothing can reach it. |
+
+**Two things in `StairsGame` are not what they look like.** `Board` is scaled `(2, 0.02, 2)` — a
+flattened slab — so `Cells` carries `(0.5, 50, 0.5)` purely to undo that `0.02`; change one of those
+numbers and every cell squashes or stretches with it, which is also why nothing Stairs builds is
+parented to `Board`. And the eight cells in each row are named `Cube, Cube (4), Cube (1), Cube (5), …`
+and sit in the Hierarchy in that order — **sibling order is not column order**, so `StairsBoard`
+sorts by position. Chasms does the opposite and takes sibling order as the plateau index; the two
+boards were authored differently and must not be assumed to match.
 
 No game scene has its own rig. `Input Reader`, `Menu Manager`, `XRRig` and `Directional Light` live
 once, in `OpeningScene`, under `PersistentRig` — see
@@ -224,9 +234,9 @@ where the server validates the key against `GameRoutes` (**never** hand a client
 running.** Full flow, including what survives the switch and what rebinds around it:
 [Session flow](Assets/Scripts/CLAUDE.md#session-flow).
 
-Ten components carry a load-bearing `[DefaultExecutionOrder]` (−10, 10, 15, 20, 23, 24, 25, 30). The
-chain puts everything that *reads* a world pose after everything that *writes* one — the table is in
-[the shared systems doc](Assets/Scripts/CLAUDE.md#execution-order-contract).
+Fourteen components carry a load-bearing `[DefaultExecutionOrder]` (−10, 10, 15, 20, 23, 24, 25, 30).
+The chain puts everything that *reads* a world pose after everything that *writes* one — the table is
+in [the shared systems doc](Assets/Scripts/CLAUDE.md#execution-order-contract).
 
 ## Adding a game
 
@@ -260,7 +270,7 @@ Optionally, implement **`IGameSession`** on whatever already owns the game's sta
 with `GameSessionRegistry` in `Awake`/`OnNetworkSpawn`. That is how a game gets a reset hook when it
 is picked (`OnGameSelected`), behaviour behind its own menu keys (`InvokeMenuAction`), and a label
 under every other player's nametag (`AvatarBadgeForSeat`). Doing nothing / returning null is the
-normal answer — `BashRoot` implements one of the three, `PlateauGame` two, Stairs none.
+normal answer — `BashRoot` implements one of the three, `PlateauGame` and `StairsGame` two each.
 
 Put the board **at the origin** and nothing else. If a board needs more room, change
 `PlayerRing.Radius` rather than moving boards per scene.
@@ -286,7 +296,9 @@ for the life of the app. The other failure mode is two objects sharing a name si
 scene should ever have its own copy of anything `PersistentRig` provides.
 
 Plateau adds `Plateaus` · `Bridges` · `Pieces` · `Pointer` · **`Central Plateau`** (exact string;
-without it the bridge rules have no seed).
+without it the bridge rules have no seed). Stairs adds `Stairs Root` · `Cells` · `Board` — and
+`Board` for its **collider**, not its mesh: that is what the pointer ray lands on over a bare square,
+so losing it leaves every occupied cell clickable and every empty one dead.
 
 **Prefab child names** are equally load-bearing: `TagsRoot` (and `Username`, `ScoreTag`, `Gemheart`
 *inside* it), `PlayerLeft`, `PlayerRight`, `mainFace`, `tornado` on `Player.prefab`; `Count` and
@@ -303,6 +315,11 @@ empty; `MenuControl` logs an error rather than failing silently.
 
 **Sibling order under `Plateaus` is the plateau index.** Reordering those 41 children renumbers the
 whole board, and the numbers are on the wire. Adding one at the end is safe.
+
+**Sibling order under `Cells` is not.** The two boards disagree on purpose: `StairsBoard` sorts the
+rows by z and each row's cells by x, because `StairsGame`'s columns are authored interleaved
+(`Cube, Cube (4), Cube (1), …`). Moving a cell in the Scene view renumbers Stairs; reordering the
+Hierarchy does not.
 
 **Tags**: `key` (pointer targets) and `Grabbable` (grabber volumes); `GrabControl` also walks parents
 **by name** until it hits `Right Grabber`/`Left Grabber`. BASH adds `gamepiece`, `obstacle`,
@@ -330,9 +347,12 @@ owner-written. Every `ServerRpc` that mutates shared state validates the sender.
 `nickName`. `BoardAnchor.Awake` resets the alignment flag explicitly for this reason.
 
 **`Instance` singletons** (`BoardAnchor`, `RoomAnchor`, `RoomContent`, `PlateauBoard`, `PlateauGame`,
-`PlateauPieceView`, `BashRoot`) are set in `Awake`/`OnNetworkSpawn` and cleared in
-`OnDestroy`/`OnNetworkDespawn` guarded by `if (Instance == this)`. Keep that guard — `RoomAnchor` and
-`PlateauGame` despawn and respawn on a reconnect.
+`PlateauPieceView`, `BashRoot`, `StairsGame`, `StairsBoard`, `StairsView`) are set in
+`Awake`/`OnNetworkSpawn` and cleared in `OnDestroy`/`OnNetworkDespawn` guarded by
+`if (Instance == this)`. Keep that guard — `RoomAnchor` and `PlateauGame` despawn and respawn on a
+reconnect. **A `NetworkBehaviour` must `override` `OnDestroy` and call `base`**, not declare its own:
+NGO declares it virtual and does its own teardown in it, so hiding it compiles with a warning and
+then leaks the behaviour's registration with its `NetworkObject`. `StairsGame` is the one that does.
 
 **There are still no namespaces.** Every class sits in the global namespace, so a name that collides
 with something in a *referenced* assembly is a real hazard — `HierarchyUtils` is named that rather
@@ -365,7 +385,7 @@ are marked applied, corrected, or out of scope — **check the code before trust
 | --- | --- |
 | [`plateauRules.md`](docs/plateauRules.md) | Plateau's rules. Starting forces and movement are implemented; the rest is still the design target. It says 33 plateaus and the scene has 41 — the code counts children, so the doc is the stale one. |
 | [`BASHRules.md`](docs/BASHRules.md) | BASH's rules. |
-| [`stepsRules.md`](docs/stepsRules.md) | Stairs' rules. |
+| [`stepsRules.md`](docs/stepsRules.md) | Stairs' rules. **Implemented in full**, both win conditions included; the readings taken where it is ambiguous are listed in [`Assets/Scripts/Stairs/CLAUDE.md`](Assets/Scripts/Stairs/CLAUDE.md). |
 | [`BASHUpdate.md`](docs/BASHUpdate.md) | **Applied.** Porting BASH in as a third game: GUID collisions, the world-space → `World Root` local conversion, the scene to build. §14 records where the port differed from the plan. |
 | [`BASHRulesUpdate.md`](docs/BASHRulesUpdate.md) | **Applied.** The rules rework that replaced BASH's joystick-steered shot with spin-aimed movement plus the boat/plane artillery arc. |
 | [`bridgeMovementUpdate.md`](docs/bridgeMovementUpdate.md) | **Applied.** Re-laying a bridge already on the board. Supersedes `bigFixes1.md` §4. |

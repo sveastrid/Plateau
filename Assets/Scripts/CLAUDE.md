@@ -5,11 +5,11 @@ grab, the player ring, avatar replication, menus, passthrough, input and in-head
 
 Read the root [`CLAUDE.md`](../../CLAUDE.md) first.
 
-This folder is the **`MRBoardGame.Shared`** assembly. It references neither game, and the compiler
-enforces that: `Assets/Scripts/Plateau/` and `Assets/Scripts/Bash/` carve themselves out into
-`MRBoardGame.Plateau` and `MRBoardGame.Bash`, both referencing Shared and not each other. Anything
-here that wants to know something about a game must go through
-[`IGameSession`](#games-as-data--assetsscriptsgames). See
+This folder is the **`MRBoardGame.Shared`** assembly. It references no game, and the compiler
+enforces that: `Assets/Scripts/Plateau/`, `Assets/Scripts/Bash/` and `Assets/Scripts/Stairs/` carve
+themselves out into `MRBoardGame.Plateau`, `MRBoardGame.Bash` and `MRBoardGame.Stairs`, all three
+referencing Shared and none referencing each other. Anything here that wants to know something about
+a game must go through [`IGameSession`](#games-as-data--assetsscriptsgames). See
 [Adding a game](../../CLAUDE.md#adding-a-game).
 
 `HierarchyUtils.FindDescendant` is the shared name-based hierarchy search. It replaced four
@@ -239,19 +239,20 @@ just placed.
 
 ### Execution-order contract
 
-Ten components carry `[DefaultExecutionOrder]` and the values are load-bearing. The whole chain
+Fourteen components carry `[DefaultExecutionOrder]` and the values are load-bearing. The whole chain
 exists to put everything that *reads* a world pose after everything that *writes* one:
 
 | Order | Component | Why |
 | --- | --- | --- |
-| **−10** | `PlateauBoard` | bakes the plateau table and the adjacency graph before anything reads them. Also idempotent via `EnsureBaked()`, because `PlateauGame`'s server tick can arrive in the same frame as the scene load |
+| **−10** | `PlateauBoard`, `StairsBoard` | bake their board tables before anything reads them. Both idempotent via `EnsureBaked()`, because a game's server tick can arrive in the same frame as the scene load |
 | (default 0) | `CameraController2` | locomotion, recentre, and the per-frame alignment to the room anchor |
 | **10** | `BoardAnchor` | must run **after** `OVRSpatialAnchor.Update()` refreshes the anchor's world pose; reading it earlier gets last frame's rig baked in |
 | **15** | `RoomContent` | applies the shared board pose to `World Root` in this frame's aligned frame |
 | **20** | `PlayerControls`, `WorldGrab` | sample head/hand world poses **after** the rig has moved; at order 0 every pose broadcast is a frame stale (~13 ms at 72 Hz) on top of network latency |
+| **20** | `StairsView` | reconciles Stairs' pieces after the frame has been placed and before `StairsSelection` lights them. (Chasms' equivalent is at 30 instead; both work, because the billboard that wanted the late slot is in `LateUpdate` either way) |
 | **23** | `PlateauSpawnMenu` | so `IsOpenOrOpening` is up to date before `PlateauSelection` reads it. Ordering is no longer what protects the selection — `IsOpenOrOpening` is, because the 0.15 s open debounce leaves the menu "closed" for ~10 frames after the grip goes down |
 | **24** | `PointerBeam` | one `Physics.SyncTransforms()` + one raycast, after the rig and the board have both settled |
-| **25** | `PlateauSelection`, `PlateauChooser`, `ControlListener` | all three consume the hit `PointerBeam` produced this same frame. They are peers and none depends on the others — `PlateauChooser` and `PlateauSelection` are both ChasmGame, `ControlListener` is BASH |
+| **25** | `PlateauSelection`, `PlateauChooser`, `ControlListener`, `StairsSelection` | all four consume the hit `PointerBeam` produced this same frame. They are peers and none depends on the others — `PlateauChooser` and `PlateauSelection` are ChasmGame, `ControlListener` is BASH, `StairsSelection` is StairsGame, and no two of them are ever in the same scene |
 | **30** | `PlateauPieceView` | reconciles pieces; its `LateUpdate` billboard needs the final `World Root` pose |
 
 ## The content frame and the two-grip world grab
@@ -336,9 +337,13 @@ exist for that and is gone. There is a fallback to finding `Username`/`ScoreTag`
 
 - `ScoreTag` shows whatever the loaded game returns from
   `IGameSession.AvatarBadgeForSeat(spawnSlot)`, and **null hides it** — which is the normal case,
-  since only Chasms has anything to say (that seat's `gemheartScores` entry). `PlayerControls` does
-  not know what the number means; it used to read `PlateauGame.Instance.ScoreForSeat` directly,
-  which put one game's score on the shared avatar. Like the nametag it is visible to everyone
+  since only two games have anything to say: Chasms that seat's `gemheartScores` entry, Stairs the
+  captured-tile count for whichever of its two seats holds that ring slot (null for a spectator).
+  `PlayerControls` does not know what the number means; it used to read
+  `PlateauGame.Instance.ScoreForSeat` directly, which put one game's score on the shared avatar.
+  It is read **every frame for every remote avatar**: `StairsGame` answers from a cached
+  `string[0..40]`, `PlateauGame` still does a fresh `int.ToString()` per player per frame. Copy the
+  former. Like the nametag it is visible to everyone
   *except* its owner, because `OnNetworkSpawn` deactivates every child of your own avatar.
   The icon child beside it is still named `Gemheart`, which is Plateau's word for a generic slot.
 
@@ -419,8 +424,8 @@ separate prefab with its own key set and its own dispatcher (`PlateauSpawnMenu.H
 
 `pointerControl` fires on trigger colliders tagged **`key`** and stretches the visible beam to the
 hit — but in a game scene `PointerBeam` overwrites the beam length absolutely every frame, and
-`MenuControl.keepPointerAlwaysOn` (taken from the loaded game's `GameModule`; true for Chasms and
-BASH) leaves the pointer switched on outside the menu. See [The pointer](Plateau/CLAUDE.md#the-pointer) and
+`MenuControl.keepPointerAlwaysOn` (taken from the loaded game's `GameModule`; true for all three
+games) leaves the pointer switched on outside the menu. See [The pointer](Plateau/CLAUDE.md#the-pointer) and
 [The persistent rig](#the-persistent-rig).
 
 `GrabControl` (on `Left Grabber` / `Right Grabber`) tracks colliders tagged **`Grabbable`**;
@@ -481,11 +486,11 @@ Control map as it stands:
 
 | Input | Effect |
 | --- | --- |
-| Right trigger | select a menu / keyboard key; in Chasms, select a piece or a destination plateau or spin the chooser; in BASH, select one of your gamepieces |
+| Right trigger | select a menu / keyboard key; in Chasms, select a piece or a destination plateau or spin the chooser; in BASH, select one of your gamepieces; in Stairs, **held** it drags a pawn or a step onto the board, **tapped** it selects your pawn, takes a move, or presses End Turn |
 | Left trigger | BASH only: fire — lob the arc, then commit the spin-aimed movement line |
 | `X` | open / close the menu |
 | `A` | re-align to the room anchor (`BoardAnchor.RequestReAlign`) |
-| `B` | cancel the current piece selection (Chasms) |
+| `B` | cancel the current piece selection (Chasms), or the current selection or drag (Stairs) |
 | **Left grip alone** | Chasms: open the personal spawn menu (`PlateauSpawnMenu`), held — releasing it, adding the right grip, or opening `Menu1` closes it |
 | Both grips | world grab — move, turn, resize the board |
 | Left joystick | move and snap-turn — **only when not colocated and not world-grabbing** |

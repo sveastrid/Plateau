@@ -486,8 +486,10 @@ public class MenuControl : MonoBehaviour
 
         GameObject rulesCanvasGo = new GameObject("RulesCanvas");
         rulesCanvasGo.transform.SetParent(menu.transform, false);
-        rulesCanvasGo.transform.localPosition = new Vector3(-0.6f, 0, -0.75f); // Offset to the right of the menu
-        rulesCanvasGo.transform.localRotation = Quaternion.Euler(0, -75,0);
+        // A wing to the menu's left, turned back in towards the player rather than lying flat
+        // alongside it. Both numbers are menu-local, so they follow wherever OpenMenu1 puts the menu.
+        rulesCanvasGo.transform.localPosition = new Vector3(-0.6f, 0, -0.75f);
+        rulesCanvasGo.transform.localRotation = Quaternion.Euler(0, -75, 0);
 
         Canvas canvas = rulesCanvasGo.AddComponent<Canvas>();
         canvas.renderMode = RenderMode.WorldSpace;

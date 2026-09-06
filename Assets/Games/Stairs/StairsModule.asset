@@ -16,5 +16,7 @@ MonoBehaviour:
   sceneName: StairsGame
   menuLabel: Stairs
   rulesText: {fileID: 4900000, guid: db5c356b594c44d47903d00d5345a8c3, type: 3}
-  menuActions: []
-  keepPointerAlwaysOn: 0
+  menuActions:
+  - keyName: New Game
+    label: New Game
+  keepPointerAlwaysOn: 1

@@ -57,7 +57,8 @@ public static class GameSessionRegistry
 
     /// <summary>
     /// The session belonging to the scene that is loaded, or null in the lobby — and also null in a
-    /// game that has no session at all, which is a perfectly ordinary state. StairsGame is a Cube.
+    /// game that has no session at all, which is a perfectly ordinary state. All three games happen
+    /// to register one today; a fourth need not.
     /// </summary>
     public static IGameSession Active
     {
