@@ -30,6 +30,59 @@ yourself reading the other game, that is a coupling bug — say so rather than w
 and holds 5,948 `Editor/*.cs` files that will drown any unscoped glob. Every `.cs` under `Assets/` is
 first-party and there are only **52** of them, totalling ~0.5 MB.
 
+## Working with an agent here
+
+**Name the area in the first sentence of the request.** The nested files above load lazily, when
+something in that folder is first touched. "In BASH, the trail does not despawn on reset" loads
+BASH's 210 lines and never Plateau's; "fix the trail despawn bug" makes the agent go looking, and it
+may read both games to find out where that lives.
+
+**An agent saying it needs the other game is a bug report, not a request.** `MRBoardGame.Bash`
+cannot reference `MRBoardGame.Plateau` and neither can reach the other's internals. Shared code that
+needs to know something about a game goes through `IGameSession`.
+
+**Compiler messages come back from `Unity_ReadConsole` typed as `Log`, not `Error`.** Filtering on
+severity returns zero entries while the build is genuinely broken — match the text `error CS`
+instead. A missing `Library/ScriptAssemblies/<Name>.dll` while the other three are present says the
+same thing.
+
+**`Unity_RunCommand` echoes the entire script back in its result**, so every call costs about twice
+what it looks like. Put several checks in one script rather than running several scripts.
+
+**Prefer asking Unity over reading files.** One `RunCommand` dumping a prefab hierarchy beats parsing
+`.prefab` YAML, and one play-mode check beats re-reading the component that would produce the
+behaviour. Both are cheaper and neither can be wrong about the current state.
+
+**Reach for subagents only for genuine breadth** — a whole-project sweep, "is this pattern used
+anywhere else". A bug or a feature inside one game is 7–13 files; a single session reading them
+directly is far cheaper than a subagent that starts cold and re-derives the context.
+
+### Keeping these files current
+
+**The doc changes in the same commit as the code.** `docs/CLAUDE.md` rotted precisely because it did
+not: `BASHUpdate.md:118` recorded "CLAUDE.md says `Menu1.prefab` holds three keys. That is stale: it
+holds five" and left it for later, which never came. A stale doc is worse than no doc, because it is
+believed.
+
+| What changed | Which file |
+| --- | --- |
+| Behaviour only one game has | that game's `CLAUDE.md` |
+| The rig, colocation, content frame, avatars, menus, input, passthrough, networking | `Assets/Scripts/CLAUDE.md` |
+| Toolchain, build steps, a load-bearing name, the "adding a game" contract | this file |
+
+Write down what the code cannot say: why a constant has that value, what breaks if it changes, what
+was tried and rejected. Skip anything a reader could get by opening the file. If a paragraph would
+still be true after the code it describes is deleted, it is not carrying its weight.
+
+Keep this file lean — it is the one that loads on every single session. Detail belongs one level
+down. These four cross-link heavily and markdown has no compiler, so after editing any of them:
+
+```powershell
+powershell -File Tools/Check-DocLinks.ps1
+```
+
+It checks every relative link and every heading anchor, and exits non-zero on a break.
+
 ## Toolchain and targets
 
 | | |
