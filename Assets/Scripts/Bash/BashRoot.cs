@@ -21,9 +21,19 @@ using UnityEngine;
 /// units, which is what makes a shot cross the same fraction of the board however big the players
 /// have made it.
 /// </summary>
-public class BashRoot : MonoBehaviour
+public class BashRoot : MonoBehaviour, IGameSession
 {
     public static BashRoot Instance { get; private set; }
+
+    /// <summary>This game's menu key, matching the gameKey on BashModule.asset.</summary>
+    public const string BashGameKey = "BASH";
+
+    // The two keys BashModule.asset declares in menuActions. They used to be cases in
+    // MenuControl.HandleKey, which meant shared code held a direct type reference to ControlListener
+    // and IslandManager and a dictionary row naming BASH's scene. Now the module declares the keys
+    // and this dispatches them, and MenuControl knows neither.
+    private const string ResetKey = "Reset Game";
+    private const string RandomIslandsKey = "Random Islands";
 
     /// <summary>The frame itself, or null when no BASH scene is loaded.</summary>
     public static Transform Frame => Instance != null ? Instance.transform : null;
@@ -50,6 +60,7 @@ public class BashRoot : MonoBehaviour
     void Awake()
     {
         Instance = this;
+        GameSessionRegistry.Register(this);
         netObject = GetComponent<NetworkObject>();
 
         if (netObject == null)
@@ -62,12 +73,80 @@ public class BashRoot : MonoBehaviour
 
     void OnDestroy()
     {
+        GameSessionRegistry.Unregister(this);
+
         // Guarded, like every other Instance singleton here: a scene switch can construct the
         // next one before destroying this one.
         if (Instance == this)
         {
             Instance = null;
         }
+    }
+
+    // ------------------------------------------------------------------ IGameSession
+
+    public string GameKey => BashGameKey;
+
+    /// <summary>
+    /// Nothing. Unlike Chasms, picking BASH from the menu does not reset the board — that is what
+    /// the Reset Game key is for, and it is deliberately a separate action so a player rejoining a
+    /// game in progress does not wipe it.
+    /// </summary>
+    public void OnGameSelected()
+    {
+    }
+
+    /// <summary>No per-seat label in BASH; there is no score to show yet.</summary>
+    public string AvatarBadgeForSeat(int seat)
+    {
+        return null;
+    }
+
+    /// <summary>
+    /// The two keys BashModule.asset puts in the room menu while BashGame is loaded.
+    ///
+    /// Both resolve their target in the active scene and log-and-no-op when there is not one, the
+    /// same way Place Anchor handles a missing BoardAnchor. Reaching either without a board should
+    /// now be impossible — MenuControl only builds the loaded game's action keys — so a log here
+    /// means the BASH scene is missing a component, not that the key leaked into another game.
+    /// </summary>
+    public void InvokeMenuAction(string keyName)
+    {
+        switch (keyName)
+        {
+            case ResetKey:
+            {
+                ControlListener controls = FindFirstObjectByType<ControlListener>();
+                if (controls != null)
+                {
+                    controls.ResetBoard();
+                }
+                else
+                {
+                    Debug.Log("BashRoot: 'Reset Game' pressed, but there is no ControlListener in " +
+                              "this scene.");
+                }
+                return;
+            }
+
+            case RandomIslandsKey:
+            {
+                IslandManager islands = FindFirstObjectByType<IslandManager>();
+                if (islands != null)
+                {
+                    islands.RandomizeIslands();
+                }
+                else
+                {
+                    Debug.Log("BashRoot: 'Random Islands' pressed, but there is no IslandManager " +
+                              "in this scene.");
+                }
+                return;
+            }
+        }
+
+        Debug.Log("BashRoot: menu action '" + keyName + "' is declared on the module but not " +
+                  "handled here.");
     }
 
     public static Vector3 ToLocalPoint(Vector3 world)

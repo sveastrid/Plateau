@@ -178,8 +178,18 @@ goes true is dropped, not committed.
 Piece selection goes through **`pointerControl`, not `PointerBeam`**: BASH's gamepiece colliders
 are triggers, and `PointerBeam` raycasts with `QueryTriggerInteraction.Ignore`, so it would never
 see them — and relaxing that would make the beam hit its own capsule and both grabber volumes.
-`ControlListener.Bind()` opts the scene into `MenuControl.SetKeepPointerAlwaysOn(true)`, the same
-way `PlateauSpawnMenu.Bind()` does for Chasms.
+The pointer stays live outside the menu because **`keepPointerAlwaysOn` is set on
+`BashModule.asset`**, applied on `activeSceneChanged` so it holds from the first frame of the scene.
+`ControlListener.Bind()` still calls `MenuControl.SetKeepPointerAlwaysOn(true)`; that is now a
+redundant agreement with the module rather than the thing that switches it on.
+
+**BASH's two menu keys are its own.** `Reset Game` and `Random Islands` are declared in
+`BashModule.asset`'s `menuActions`, built into the room menu by `MenuControl` only while `BashGame`
+is the loaded scene, and dispatched to `BashRoot.InvokeMenuAction`, which resolves `ControlListener`
+and `IslandManager` in the active scene. They used to be two `case` blocks in `MenuControl` holding
+direct type references to both of those classes, plus a row each in a `KeyScene` dictionary naming
+BASH's scene, plus a key authored into `Menu1.prefab` **and** `Menu2.prefab`. Adding a third key is
+now one row on the module and one `case` in `BashRoot`, both inside this folder.
 
 ### Known rough edges, inherited
 

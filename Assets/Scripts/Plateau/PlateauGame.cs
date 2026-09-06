@@ -21,9 +21,17 @@ using UnityEngine.SceneManagement;
 /// server-written, every RPC is RequireOwnership=false and validates the sender, and every move is
 /// re-checked server-side against the same PlateauMoveRules call the client used to highlight it.
 /// </summary>
-public class PlateauGame : NetworkBehaviour
+public class PlateauGame : NetworkBehaviour, IGameSession
 {
     public static PlateauGame Instance { get; private set; }
+
+    /// <summary>
+    /// This game's menu key, matching the gameKey on PlateauModule.asset. Naming it here is fine —
+    /// it is *shared* code naming a game that this project is trying to be rid of, and everything
+    /// in this folder is Chasms by definition. It is the one string that ties the module asset to
+    /// the code, and GameCatalog is what turns it into a scene name.
+    /// </summary>
+    public const string PlateauGameKey = "Chasms";
 
     /// <summary>How often the server reconciles the board. Cheap; nothing here is per-frame work.</summary>
     const float ServerTickSeconds = 0.25f;
@@ -115,6 +123,12 @@ public class PlateauGame : NetworkBehaviour
     {
         Instance = this;
 
+        // Registered here rather than in Awake because everything this session does needs the
+        // NetworkBehaviour to be spawned. It stays registered across every game switch — this rides
+        // on Room Anchor, which survives them — and that is exactly what lets GameSelector reach
+        // OnGameSelected while the room is still sitting in Stairs.
+        GameSessionRegistry.Register(this);
+
         stacks.OnListChanged += HandleStacksChanged;
         placedBridges.OnListChanged += HandleBridgesChanged;
         edges.OnListChanged += HandleEdgesChanged;
@@ -151,6 +165,8 @@ public class PlateauGame : NetworkBehaviour
             NetworkManager.Singleton.SceneManager.OnLoadEventCompleted -= HandleLoadEventCompleted;
         }
 
+        GameSessionRegistry.Unregister(this);
+
         // Guarded: RoomAnchor despawns and respawns on a reconnect, and so does this.
         if (Instance == this)
         {
@@ -177,8 +193,14 @@ public class PlateauGame : NetworkBehaviour
 
     // ------------------------------------------------------------------ server
 
+    // ------------------------------------------------------------------ IGameSession
+
+    /// <summary>Ties this session to PlateauModule.asset. See <see cref="PlateauGameKey"/>.</summary>
+    public string GameKey => PlateauGameKey;
+
     /// <summary>
-    /// Called on the server from GameSelector when any player picks a game.
+    /// Called on the server from GameSelector when any player picks Chasms. The registry has
+    /// already matched the key, so this does not re-check it.
     ///
     /// Picking Chasms always resets the board, which is why this hangs off the menu request rather
     /// than off a scene-load event: GameSelector.LoadGameScene deliberately no-ops when the room is
@@ -188,9 +210,9 @@ public class PlateauGame : NetworkBehaviour
     /// in Stairs at this point when switching games — so handing out armies is left to the tick
     /// below, which runs as soon as PlateauBoard exists. Latch, do not depend on ordering.
     /// </summary>
-    public void HandleGameRequested(string gameKey)
+    public void OnGameSelected()
     {
-        if (!IsServer || !IsSpawned || gameKey != GameRoutes.PlateauGameKey)
+        if (!IsServer || !IsSpawned)
         {
             return;
         }
@@ -211,6 +233,32 @@ public class PlateauGame : NetworkBehaviour
         Debug.Log("PlateauGame: board reset.");
     }
 
+    /// <summary>
+    /// Chasms declares no menuActions on its module, so nothing can reach this. Kept honest rather
+    /// than silent: a key added to PlateauModule.asset and forgotten here would otherwise do
+    /// nothing at all with no clue why.
+    /// </summary>
+    public void InvokeMenuAction(string keyName)
+    {
+        Debug.Log("PlateauGame: menu action '" + keyName + "' is declared on the module but not " +
+                  "handled here.");
+    }
+
+    /// <summary>
+    /// That seat's held-gemheart count, for the label under every other player's nametag. Null
+    /// while the board is not live, which hides the label — PlayerControls neither knows nor cares
+    /// what the number means.
+    /// </summary>
+    public string AvatarBadgeForSeat(int seat)
+    {
+        if (!IsSpawned)
+        {
+            return null;
+        }
+
+        return ScoreForSeat(seat).ToString();
+    }
+
     void Update()
     {
         // Independent of the quarter-second tick below, and not gated on boardLive -- see
@@ -228,7 +276,8 @@ public class PlateauGame : NetworkBehaviour
         }
         nextTick = Time.unscaledTime + ServerTickSeconds;
 
-        bool inChasms = SceneManager.GetActiveScene().name == GameRoutes.PlateauSceneName;
+        GameModule activeGame = GameCatalog.ActiveModule;
+        bool inChasms = activeGame != null && activeGame.gameKey == PlateauGameKey;
         PlateauBoard board = PlateauBoard.Instance;
 
         if (!inChasms || board == null)

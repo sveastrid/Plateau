@@ -62,10 +62,13 @@ which is also what makes a late joiner's board appear at all.
 One server tick at 4 Hz does everything, so nothing depends on ordering:
 
 - **Pressing `Chasms` always resets the board**, even when the room is already in Chasms. That is
-  why the reset hangs off `GameSelector.RequestGameServerRpc` → `PlateauGame.HandleGameRequested`
-  and not off a scene-load event: `LoadGameScene` deliberately no-ops for the scene you are already
-  in, so a load hook would never fire for Chasms → Chasms. `HandleGameRequested` only clears; the
-  board may not be loaded yet, so handing out armies is left to the tick.
+  why the reset hangs off `GameSelector.RequestGameServerRpc` → `GameSessionRegistry.ForKey("Chasms")`
+  → `PlateauGame.OnGameSelected` and not off a scene-load event: `LoadGameScene` deliberately no-ops
+  for the scene you are already in, so a load hook would never fire for Chasms → Chasms. It is
+  resolved **by key, not by active scene** — the room is still sitting in the previous game at that
+  moment, and `PlateauGame` is reachable anyway because it rides on the persistent `Room Anchor`.
+  `OnGameSelected` only clears; the board may not be loaded yet, so handing out armies is left to
+  the tick.
 - **Starting forces** (`plateauRules.md:31-36`): 6 troops, 2 parshendi, 1 shardbearer, 2 bridges, on
   the central plateau.
 - **A late joiner gets their own army** and nothing else on the board moves. Implemented as "any
@@ -237,8 +240,10 @@ not). Board targeting is a separate raycast in **`PointerBeam`**, on the same ob
 - `PointerBeam` writes the beam length **absolutely** every frame, which also masks
   `pointerControl.OnTriggerStay`'s compounding beam maths.
 - The pointer is normally switched on only while the menu is open. `MenuControl.keepPointerAlwaysOn`
-  leaves it on during play — `false` on the shared `Menu Manager` instance, opted into by
-  `PlateauSpawnMenu.Bind()` via `MenuControl.SetKeepPointerAlwaysOn(true)` (ChasmGame-only). See
+  leaves it on during play, and ChasmGame gets that from **`keepPointerAlwaysOn` on
+  `PlateauModule.asset`** — applied on `activeSceneChanged`, so it is live from the first frame.
+  `PlateauSpawnMenu.Bind()` still calls `MenuControl.SetKeepPointerAlwaysOn(true)`; that is now a
+  redundant agreement with the module rather than the thing that switches it on. See
   [The persistent rig](../CLAUDE.md#the-persistent-rig).
 
 ### Highlighting — `MaterialPropertyBlock`, not `keyInfo`'s material swap

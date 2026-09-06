@@ -1,4 +1,3 @@
-using System.Collections.Generic;
 using Unity.Netcode;
 using UnityEngine;
 using UnityEngine.SceneManagement;
@@ -9,8 +8,13 @@ using UnityEngine.SceneManagement;
 ///
 /// Keys are dispatched by <see cref="keyInfo.keyName"/>, never by child index. The menu this
 /// replaced resolved every widget with expressions like GetChild(0).GetChild(9).GetChild(13),
-/// so re-skinning the prefab broke it with no compile error. Adding a game to this template
-/// should mean adding a key to the prefab and a case to <see cref="HandleKey"/>, nothing else.
+/// so re-skinning the prefab broke it with no compile error.
+///
+/// **The game keys are built at runtime, not authored.** They used to be one object per game in
+/// Menu1.prefab and another in Menu2.prefab, with a case in HandleKey, a row in a KeyScene
+/// dictionary, and a branch in the rules lookup — five edits across three shared files, and two
+/// prefabs to keep in step by hand. Now the catalog is the list: MenuControl clones a template key
+/// once per <see cref="GameModule"/>, and this class no longer knows the name of a single game.
 /// </summary>
 public class MenuControl : MonoBehaviour
 {
@@ -32,28 +36,38 @@ public class MenuControl : MonoBehaviour
     public float menuDistance = 1.3f;
     public float menuLeftOffset = 0.7f;
 
-    // A game where the pointer is also used to touch the board itself, rather than only the menu,
-    // leaves it switched on all the time. Off by default so the lobby and StairsGame keep the
-    // menu-only behaviour they were authored with.
+    // Whether the pointer stays live outside the menu. This is the *current* value, not a setting:
+    // AdoptSceneDefaults overwrites it from the incoming scene's GameModule on every scene change,
+    // and a game may still override it within its own scene through SetKeepPointerAlwaysOn.
     public bool keepPointerAlwaysOn = false;
 
-    // Matches the keyName on the key in Menu1.prefab exactly, space included.
+    // Matches the keyName on the key in the menu prefabs exactly, spaces included.
     private const string VoiceKey = "Voice Chat";
+    private const string PassthroughKey = "Passthrough";
+    private const string PlaceAnchorKey = "Place Anchor";
 
-    /// <summary>
-    /// Keys that only mean something in one scene, so that Menu1/Menu2 can stay a single pair of
-    /// prefabs shared by every game. Anything not listed here shows everywhere, which is the case
-    /// for all five of the original keys — a game switch and Place Anchor are always meaningful.
-    ///
-    /// Without this, BASH's Reset Game and Random Islands would sit in the lobby, Stairs and
-    /// Chasms doing nothing, which CLAUDE.md already flags as a wart in the mirror-image case
-    /// (Passthrough: a live handler with no key).
-    /// </summary>
-    static readonly Dictionary<string, string> KeyScene = new Dictionary<string, string>
-    {
-        { "Reset Game",     GameRoutes.BashSceneName },
-        { "Random Islands", GameRoutes.BashSceneName },
-    };
+    // Objects inside the menu prefabs. The two templates are inactive keys that exist only to be
+    // cloned — one game-key sized, one action-key sized — so the generated keys keep the authored
+    // collider, rigidbody, materials and label scale rather than having them set from code.
+    private const string RowName = "Row1";
+    private const string GameKeyTemplateName = "GameKeyTemplate";
+    private const string ActionKeyTemplateName = "ActionKeyTemplate";
+
+    // Row1-local layout, lifted from where the keys used to be authored. The column ran
+    // 0.163 -> 0.014 -> -0.135 -> -0.282 (Place Anchor), and the action row sat one more step down
+    // at -0.431 with its two keys at x 0.62 and 1.2.
+    private const float KeyColumnX = 0.9f;
+    private const float KeyColumnTopZ = 0.163f;
+    private const float KeyRowSpacing = 0.149f;
+    private const float KeyY = 0.011f;
+    private const float ActionRowCentreX = 0.91f;
+    private const float ActionRowSpacingX = 0.58f;
+
+    // Past this many games the column pushes the action row down into the authored Voice Chat key
+    // at z = -0.631, and then off the Background quad. Not enforced — a warning you can act on beats
+    // a menu that silently drops the game you just added. Fixing it properly means either laying the
+    // column out in two, or generating Voice Chat too and dropping the Menu1/Menu2 split with it.
+    private const int ComfortableColumnKeys = 4;
 
     private pointerControl currentPointer;
     private GameObject currentMenu;
@@ -71,13 +85,13 @@ public class MenuControl : MonoBehaviour
     ///
     /// This hangs off activeSceneChanged, not Start(). Menu Manager is part of PersistentRig and is
     /// therefore DontDestroyOnLoad, so Start() runs exactly once for the life of the app — in
-    /// OpeningScene — and could never reset anything for StairsGame or ChasmGame. Same pattern as
+    /// OpeningScene — and could never reset anything for another scene. Same pattern as
     /// PlayerControls.BindToScene and BoardAnchor.HandleActiveSceneChanged.
     /// </summary>
     void Start()
     {
         SceneManager.activeSceneChanged += HandleActiveSceneChanged;
-        ApplyPointerDefault();
+        AdoptSceneDefaults();
     }
 
     void OnDestroy()
@@ -94,11 +108,26 @@ public class MenuControl : MonoBehaviour
         currentPointer = null;
         pressedKey = null;
 
+        AdoptSceneDefaults();
+    }
+
+    /// <summary>
+    /// Take the incoming scene's pointer behaviour from its GameModule.
+    ///
+    /// This used to be a sticky field that only ever got set *true*, by ChasmGame, from
+    /// PlateauSpawnMenu.Bind() on some later frame — so the pointer was dead for the first frames
+    /// of the scene, and once ChasmGame had switched it on it stayed on in Stairs too. Reading it
+    /// from the module makes it right from the first frame and correct in both directions.
+    /// </summary>
+    private void AdoptSceneDefaults()
+    {
+        GameModule module = GameCatalog.ActiveModule;
+        keepPointerAlwaysOn = module != null && module.keepPointerAlwaysOn;
         ApplyPointerDefault();
     }
 
     /// <summary>
-    /// A game scene shows the pointer only while the menu is open, unless it opted out with
+    /// A game scene shows the pointer only while the menu is open, unless its module opted out with
     /// keepPointerAlwaysOn. The lobby is the exception: its keyboard IS the interaction, and it has
     /// no menu to gate the pointer behind.
     ///
@@ -119,14 +148,13 @@ public class MenuControl : MonoBehaviour
     }
 
     /// <summary>
-    /// A game whose pointer also touches the board — ChasmGame, via PointerBeam — opts in here
-    /// rather than by changing the shared PersistentRig default and taking the other scenes down
-    /// with it.
+    /// A game whose pointer also touches the board can force it on for the rest of its scene.
     ///
-    /// Set the flag through this, never by assigning the field. HandleActiveSceneChanged has
-    /// already run and switched the pointer off by the time any scene component's first Update
-    /// calls this, so a bare assignment would leave the pointer dead until the player opened and
-    /// closed the menu.
+    /// Set the flag through this, never by assigning the field: AdoptSceneDefaults has already run
+    /// and switched the pointer off by the time any scene component's first Update calls this, so a
+    /// bare assignment would leave the pointer dead until the player opened and closed the menu.
+    /// Prefer setting keepPointerAlwaysOn on the game's GameModule, which does the same thing a few
+    /// frames earlier and does not need a component to be alive to say it.
     /// </summary>
     public void SetKeepPointerAlwaysOn(bool value)
     {
@@ -176,13 +204,17 @@ public class MenuControl : MonoBehaviour
     }
 
     /// <summary>
-    /// One case per key in the menu prefab. Add games here.
+    /// Three keys belong to the room itself and are handled here. Everything else belongs to a
+    /// game: either it names one in the catalog, in which case it is a game switch, or it is one of
+    /// the loaded game's own menuActions and goes to that game's IGameSession.
+    ///
+    /// Nothing in this method names a game, and adding one must never change that.
     /// </summary>
     private void HandleKey(string keyName)
     {
         switch (keyName)
         {
-            case "Passthrough":
+            case PassthroughKey:
                 if (passthrough == null)
                 {
                     passthrough = FindFirstObjectByType<PassthroughController>(FindObjectsInactive.Include);
@@ -192,57 +224,14 @@ public class MenuControl : MonoBehaviour
                     passthrough.Toggle();
                 }
                 CloseMenu();
-                break;
+                return;
 
             case VoiceKey:
                 ToggleVoice();
                 CloseMenu();
-                break;
+                return;
 
-            case "Stairs":
-            case "Chasms":
-            case "BASH":
-                RequestGame(keyName);
-                CloseMenu();
-                break;
-
-            case "Reset Game":
-            {
-                // BASH's own BASHMenu is gone; these two keys are the shared menu's now. They
-                // resolve their target in the active scene and log-and-no-op when there is not
-                // one, the same way Place Anchor handles a missing BoardAnchor. Outside BASH the
-                // scene filter in OpenMenu1 hides them, so this is the belt to that's braces.
-                ControlListener bash = FindFirstObjectByType<ControlListener>();
-                if (bash != null)
-                {
-                    bash.ResetBoard();
-                }
-                else
-                {
-                    Debug.Log("MenuControl: 'Reset Game' pressed, but there is no BASH board " +
-                              "in this scene.");
-                }
-                CloseMenu();
-                break;
-            }
-
-            case "Random Islands":
-            {
-                IslandManager islands = FindFirstObjectByType<IslandManager>();
-                if (islands != null)
-                {
-                    islands.RandomizeIslands();
-                }
-                else
-                {
-                    Debug.Log("MenuControl: 'Random Islands' pressed, but there is no BASH board " +
-                              "in this scene.");
-                }
-                CloseMenu();
-                break;
-            }
-
-            case "Place Anchor":
+            case PlaceAnchorKey:
                 // Puts the room's shared spatial anchor at the placer's feet and shares it, which
                 // is what makes every headset's world space the same physical room. Room-owner
                 // only, but the check lives in BoardAnchor so there is one place that decides.
@@ -256,14 +245,27 @@ public class MenuControl : MonoBehaviour
                                      "It belongs on the Network Manager object.");
                 }
                 CloseMenu();
-                break;
-
-            default:
-                // A key with no game behind it. Deliberately inert — add a case here and a row
-                // in GameRoutes to give it one.
-                Debug.Log("MenuControl: '" + keyName + "' pressed — no game is wired to that key yet.");
-                break;
+                return;
         }
+
+        if (GameRoutes.IsGameKey(keyName))
+        {
+            RequestGame(keyName);
+            CloseMenu();
+            return;
+        }
+
+        // A game's own key. Only the loaded game's actions are ever built, so reaching here with a
+        // live session means the game declared the key in its GameModule and forgot to handle it.
+        IGameSession session = GameSessionRegistry.Active;
+        if (session != null)
+        {
+            session.InvokeMenuAction(keyName);
+            CloseMenu();
+            return;
+        }
+
+        Debug.Log("MenuControl: '" + keyName + "' pressed — no game is wired to that key yet.");
     }
 
     /// <summary>
@@ -312,91 +314,13 @@ public class MenuControl : MonoBehaviour
         currentMenu.transform.rotation = myCam.rotation;
         currentMenu.transform.position += -menuLeftOffset * currentMenu.transform.right;
 
+        BuildKeys(currentMenu);
+
         if (showRules)
         {
-            // Dynamically generate the Rules panel
-            GameObject rulesCanvasGo = new GameObject("RulesCanvas");
-            rulesCanvasGo.transform.SetParent(currentMenu.transform, false);
-            rulesCanvasGo.transform.localPosition = new Vector3(2.5f, 0, 0); // Offset to the right of the menu
-            rulesCanvasGo.transform.localRotation = Quaternion.identity;
-
-            Canvas canvas = rulesCanvasGo.AddComponent<Canvas>();
-            canvas.renderMode = RenderMode.WorldSpace;
-            RectTransform canvasRt = rulesCanvasGo.GetComponent<RectTransform>();
-            canvasRt.sizeDelta = new Vector2(800, 800);
-            canvasRt.localScale = new Vector3(0.002f, 0.002f, 0.002f);
-            
-            // Add a dark background image so the text is readable
-            UnityEngine.UI.Image bgImage = rulesCanvasGo.AddComponent<UnityEngine.UI.Image>();
-            bgImage.color = new Color(0, 0, 0, 0.85f);
-
-            GameObject viewportGo = new GameObject("Viewport");
-            viewportGo.transform.SetParent(rulesCanvasGo.transform, false);
-            RectTransform viewportRt = viewportGo.AddComponent<RectTransform>();
-            viewportRt.anchorMin = Vector2.zero;
-            viewportRt.anchorMax = Vector2.one;
-            viewportRt.sizeDelta = Vector2.zero;
-            viewportRt.pivot = new Vector2(0.5f, 0.5f);
-            
-            viewportGo.AddComponent<UnityEngine.UI.RectMask2D>();
-
-            GameObject contentGo = new GameObject("Content");
-            contentGo.transform.SetParent(viewportGo.transform, false);
-            RectTransform contentRt = contentGo.AddComponent<RectTransform>();
-            contentRt.anchorMin = new Vector2(0, 1);
-            contentRt.anchorMax = new Vector2(1, 1);
-            contentRt.pivot = new Vector2(0.5f, 1);
-            contentRt.sizeDelta = new Vector2(0, 2000);
-            contentRt.anchoredPosition = Vector2.zero;
-
-            TMPro.TextMeshProUGUI text = contentGo.AddComponent<TMPro.TextMeshProUGUI>();
-            text.fontSize = 24;
-            text.color = Color.white;
-            text.margin = new Vector4(20, 20, 20, 20);
-            
-            string sceneName = SceneManager.GetActiveScene().name;
-            string resourceName = "BASHRules";
-            if (sceneName == GameRoutes.BashSceneName)
-            {
-                resourceName = "BASHRules";
-            }
-            else if (sceneName == GameRoutes.PlateauSceneName)
-            {
-                resourceName = "plateauRules";
-            }
-            else if (sceneName == GameRoutes.DefaultScene) // StairsGame
-            {
-                resourceName = "stepsRules";
-            }
-
-            TextAsset rulesAsset = Resources.Load<TextAsset>(resourceName);
-            if (rulesAsset != null)
-            {
-                text.text = rulesAsset.text;
-            }
-            else
-            {
-                text.text = "Rules not found in Resources/" + resourceName + ".txt";
-            }
-
-            UnityEngine.UI.ContentSizeFitter csf = contentGo.AddComponent<UnityEngine.UI.ContentSizeFitter>();
-            csf.verticalFit = UnityEngine.UI.ContentSizeFitter.FitMode.PreferredSize;
-
-            UnityEngine.UI.ScrollRect scrollRect = rulesCanvasGo.AddComponent<UnityEngine.UI.ScrollRect>();
-            scrollRect.content = contentRt;
-            scrollRect.viewport = viewportRt;
-            scrollRect.horizontal = false;
-            scrollRect.vertical = true;
-            scrollRect.movementType = UnityEngine.UI.ScrollRect.MovementType.Clamped;
-            scrollRect.scrollSensitivity = 15f;
-
-            ScrollTextWithJoystick scroller = rulesCanvasGo.AddComponent<ScrollTextWithJoystick>();
-            scroller.scrollRect = scrollRect;
-            scroller.inputs = inputs;
-            scroller.scrollSpeed = 1.5f;
+            BuildRulesPanel(currentMenu);
         }
 
-        ApplySceneKeyFilter();
         ShowVoiceState();
 
         if (worldRoot != null)
@@ -410,6 +334,251 @@ public class MenuControl : MonoBehaviour
             currentPointer = pointer.GetComponent<pointerControl>();
         }
     }
+
+    // ------------------------------------------------------------------ the keys
+
+    /// <summary>
+    /// Build this menu instance's keys from the catalog and the loaded game.
+    ///
+    /// Clone-a-template rather than instantiate Key.prefab: Key.prefab is the *lobby keyboard's*
+    /// key and its label sits at a different offset and scale, and Row1 carries a non-uniform
+    /// (0.5, 50, 0.815) scale that the authored key scales were chosen against. Cloning a key that
+    /// is already correct in this hierarchy avoids reproducing any of that in code.
+    /// </summary>
+    private void BuildKeys(GameObject menu)
+    {
+        Transform row = FindDescendant(menu.transform, RowName);
+        if (row == null)
+        {
+            Debug.LogError("MenuControl: no '" + RowName + "' in " + menu.name + ", so no keys can " +
+                           "be built. The menu will open empty.");
+            return;
+        }
+
+        Transform gameTemplate = FindDescendant(row, GameKeyTemplateName);
+        Transform actionTemplate = FindDescendant(row, ActionKeyTemplateName);
+
+        if (gameTemplate == null)
+        {
+            Debug.LogError("MenuControl: no '" + GameKeyTemplateName + "' under " + RowName +
+                           ". It is an inactive key kept in the prefab purely to be cloned; " +
+                           "without it there are no game keys and no Place Anchor.");
+            return;
+        }
+
+        float z = KeyColumnTopZ;
+
+        GameCatalog catalog = GameCatalog.Instance;
+        if (catalog != null)
+        {
+            if (catalog.games.Count > ComfortableColumnKeys)
+            {
+                Debug.LogWarning("MenuControl: " + catalog.games.Count + " games is more than the " +
+                                 "menu column comfortably fits (" + ComfortableColumnKeys + "). The " +
+                                 "action row will start colliding with the Voice Chat key and then " +
+                                 "run off the panel; the menu needs re-laying out.");
+            }
+
+            for (int i = 0; i < catalog.games.Count; i++)
+            {
+                GameModule module = catalog.games[i];
+                if (module == null || string.IsNullOrEmpty(module.gameKey))
+                {
+                    Debug.LogWarning("MenuControl: catalog row " + i + " is empty or has no game " +
+                                     "key, so it gets no menu key.");
+                    continue;
+                }
+
+                CloneKey(gameTemplate, row, module.gameKey, module.MenuLabel,
+                         new Vector3(KeyColumnX, KeyY, z));
+                z -= KeyRowSpacing;
+            }
+        }
+
+        // Place Anchor continues the same column, so it stays below the games however many there
+        // are. It used to be authored at a fixed z, which a fourth game would have landed on top of.
+        CloneKey(gameTemplate, row, PlaceAnchorKey, PlaceAnchorKey, new Vector3(KeyColumnX, KeyY, z));
+        z -= KeyRowSpacing;
+
+        BuildActionKeys(row, actionTemplate, z);
+    }
+
+    /// <summary>
+    /// The loaded game's own keys, spread along one row under the column. Only the game that is
+    /// actually loaded contributes any, which is what replaced the KeyScene dictionary and the
+    /// filter pass that used to hide the other games' keys after the fact.
+    /// </summary>
+    private void BuildActionKeys(Transform row, Transform actionTemplate, float z)
+    {
+        GameModule module = GameCatalog.ActiveModule;
+        if (module == null || module.menuActions == null || module.menuActions.Length == 0)
+        {
+            return;
+        }
+
+        if (actionTemplate == null)
+        {
+            Debug.LogError("MenuControl: " + module.gameKey + " declares " + module.menuActions.Length +
+                           " menu action(s), but there is no '" + ActionKeyTemplateName + "' under " +
+                           RowName + " to build them from.");
+            return;
+        }
+
+        int count = module.menuActions.Length;
+        for (int i = 0; i < count; i++)
+        {
+            GameMenuAction action = module.menuActions[i];
+            if (string.IsNullOrEmpty(action.keyName))
+            {
+                continue;
+            }
+
+            float x = ActionRowCentreX + (i - (count - 1) * 0.5f) * ActionRowSpacingX;
+            CloneKey(actionTemplate, row, action.keyName, action.Label, new Vector3(x, KeyY, z));
+        }
+    }
+
+    /// <summary>
+    /// One key, cloned from a template that is inactive in the prefab.
+    ///
+    /// overrideNameChange is set because keyInfo.Start() rewrites a key's label with its keyName,
+    /// and on a menu instantiated this frame that has not run yet — without the flag a menuLabel
+    /// that differs from the gameKey would be silently overwritten a moment later. Same reason
+    /// ShowVoiceState sets it.
+    /// </summary>
+    private void CloneKey(Transform template, Transform row, string keyName, string label, Vector3 localPosition)
+    {
+        GameObject clone = Instantiate(template.gameObject, row);
+        clone.name = keyName;
+        clone.transform.localPosition = localPosition;
+        clone.transform.localRotation = template.localRotation;
+        clone.transform.localScale = template.localScale;
+        clone.SetActive(true);
+
+        keyInfo info = clone.GetComponent<keyInfo>();
+        if (info == null)
+        {
+            Debug.LogError("MenuControl: the key template '" + template.name + "' has no keyInfo, " +
+                           "so '" + keyName + "' can never be pressed.");
+            return;
+        }
+
+        info.keyName = keyName;
+        info.overrideNameChange = true;
+        if (info.keyLabel != null)
+        {
+            info.keyLabel.SetText(label);
+        }
+    }
+
+    /// <summary>
+    /// Search descendants by name at any depth, rather than by path.
+    ///
+    /// "Background/Row1" is exactly the kind of hardcoded path this project keeps getting bitten
+    /// by — CameraController2 and WorldGrab search the rig the same way for the same reason.
+    /// </summary>
+    private static Transform FindDescendant(Transform root, string childName)
+    {
+        if (root.name == childName)
+        {
+            return root;
+        }
+
+        for (int i = 0; i < root.childCount; i++)
+        {
+            Transform found = FindDescendant(root.GetChild(i), childName);
+            if (found != null)
+            {
+                return found;
+            }
+        }
+
+        return null;
+    }
+
+    // ------------------------------------------------------------------ the rules panel
+
+    /// <summary>
+    /// The scrollable rules panel beside the menu, built procedurally rather than from a prefab.
+    ///
+    /// The text is the loaded game's GameModule.rulesText — a direct asset reference. It used to be
+    /// a Resources.Load keyed off an if/else over scene names whose fall-through was "BASHRules",
+    /// so a game that was not one of the three showed BASH's rules with no warning.
+    /// </summary>
+    private void BuildRulesPanel(GameObject menu)
+    {
+        GameModule module = GameCatalog.ActiveModule;
+
+        GameObject rulesCanvasGo = new GameObject("RulesCanvas");
+        rulesCanvasGo.transform.SetParent(menu.transform, false);
+        rulesCanvasGo.transform.localPosition = new Vector3(2.5f, 0, 0); // Offset to the right of the menu
+        rulesCanvasGo.transform.localRotation = Quaternion.identity;
+
+        Canvas canvas = rulesCanvasGo.AddComponent<Canvas>();
+        canvas.renderMode = RenderMode.WorldSpace;
+        RectTransform canvasRt = rulesCanvasGo.GetComponent<RectTransform>();
+        canvasRt.sizeDelta = new Vector2(800, 800);
+        canvasRt.localScale = new Vector3(0.002f, 0.002f, 0.002f);
+
+        // A dark background so the text is readable against passthrough.
+        UnityEngine.UI.Image bgImage = rulesCanvasGo.AddComponent<UnityEngine.UI.Image>();
+        bgImage.color = new Color(0, 0, 0, 0.85f);
+
+        GameObject viewportGo = new GameObject("Viewport");
+        viewportGo.transform.SetParent(rulesCanvasGo.transform, false);
+        RectTransform viewportRt = viewportGo.AddComponent<RectTransform>();
+        viewportRt.anchorMin = Vector2.zero;
+        viewportRt.anchorMax = Vector2.one;
+        viewportRt.sizeDelta = Vector2.zero;
+        viewportRt.pivot = new Vector2(0.5f, 0.5f);
+
+        viewportGo.AddComponent<UnityEngine.UI.RectMask2D>();
+
+        GameObject contentGo = new GameObject("Content");
+        contentGo.transform.SetParent(viewportGo.transform, false);
+        RectTransform contentRt = contentGo.AddComponent<RectTransform>();
+        contentRt.anchorMin = new Vector2(0, 1);
+        contentRt.anchorMax = new Vector2(1, 1);
+        contentRt.pivot = new Vector2(0.5f, 1);
+        contentRt.sizeDelta = new Vector2(0, 2000);
+        contentRt.anchoredPosition = Vector2.zero;
+
+        TMPro.TextMeshProUGUI text = contentGo.AddComponent<TMPro.TextMeshProUGUI>();
+        text.fontSize = 24;
+        text.color = Color.white;
+        text.margin = new Vector4(20, 20, 20, 20);
+
+        if (module != null && module.rulesText != null)
+        {
+            text.text = module.rulesText.text;
+        }
+        else if (module != null)
+        {
+            text.text = "No rules asset is set on " + module.name + ".";
+        }
+        else
+        {
+            text.text = "";
+        }
+
+        UnityEngine.UI.ContentSizeFitter csf = contentGo.AddComponent<UnityEngine.UI.ContentSizeFitter>();
+        csf.verticalFit = UnityEngine.UI.ContentSizeFitter.FitMode.PreferredSize;
+
+        UnityEngine.UI.ScrollRect scrollRect = rulesCanvasGo.AddComponent<UnityEngine.UI.ScrollRect>();
+        scrollRect.content = contentRt;
+        scrollRect.viewport = viewportRt;
+        scrollRect.horizontal = false;
+        scrollRect.vertical = true;
+        scrollRect.movementType = UnityEngine.UI.ScrollRect.MovementType.Clamped;
+        scrollRect.scrollSensitivity = 15f;
+
+        ScrollTextWithJoystick scroller = rulesCanvasGo.AddComponent<ScrollTextWithJoystick>();
+        scroller.scrollRect = scrollRect;
+        scroller.inputs = inputs;
+        scroller.scrollSpeed = 1.5f;
+    }
+
+    // ------------------------------------------------------------------ the rest
 
     public void CloseMenu()
     {
@@ -480,28 +649,6 @@ public class MenuControl : MonoBehaviour
         }
 
         RoomAnchor.Instance.SetVoiceEnabledServerRpc(!RoomAnchor.Instance.voiceEnabled.Value);
-    }
-
-    /// <summary>
-    /// Hide the keys that belong to a game the room is not currently in. Done on the instantiated
-    /// menu rather than in the prefabs, so a game's keys cost one row in <see cref="KeyScene"/>
-    /// rather than a third menu prefab to keep in step with the other two.
-    /// </summary>
-    private void ApplySceneKeyFilter()
-    {
-        if (currentMenu == null)
-        {
-            return;
-        }
-
-        string scene = SceneManager.GetActiveScene().name;
-        keyInfo[] keys = currentMenu.GetComponentsInChildren<keyInfo>(true);
-
-        for (int i = 0; i < keys.Length; i++)
-        {
-            bool applies = !KeyScene.TryGetValue(keys[i].keyName, out string only) || only == scene;
-            keys[i].gameObject.SetActive(applies);
-        }
     }
 
     /// <summary>

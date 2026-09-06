@@ -166,9 +166,7 @@ chain puts everything that *reads* a world pose after everything that *writes* o
 
 ## Adding a game
 
-The intent is: a scene with `World Root` (+ `RoomContent`) and board geometry **at the origin**, and
-nothing else — the rig comes from `PersistentRig` for free. What it actually costs today is more
-than that, and every item is a shared file:
+Copy the shape and fill in one asset. **No shared source file is edited, and neither menu prefab.**
 
 1. `Assets/Scripts/<Name>/` for its scripts, and a scene in `Assets/Scenes/`. The scene is
    deliberately thin, because the rig lives elsewhere:
@@ -182,20 +180,29 @@ than that, and every item is a shared file:
    `Input Reader`, `Menu Manager`, `XRRig` and `Directional Light` must **not** be in it — they come
    from `PersistentRig`, and a second object with one of those names makes `Find` pick
    non-deterministically.
-2. A key in **`Menu1.prefab` and `Menu2.prefab`** whose `keyInfo.keyName` matches exactly.
-3. A `case` in `MenuControl.HandleKey` calling `RequestGame(keyName)`; a row in
-   `MenuControl.KeyScene` if the game has its own action keys; a branch in `MenuControl`'s
-   rules-resource lookup (**it currently defaults to BASH's rules** — a new game silently shows
-   them).
-4. A row in `GameRoutes.SceneByKey`, and the scene in `EditorBuildSettings`.
-5. A rules `.txt` in `Assets/Resources/`.
-6. Networked state either as a component on the shared `Room Anchor.prefab` (Plateau's approach) or
-   as prefabs in `Assets/DefaultNetworkPrefabs.asset` (BASH's approach — see `ForceSamePrefabs`).
-7. A reset hook in `GameSelector.cs` if it needs one, and anything on the shared avatar in
-   `PlayerControls.cs`.
+2. **A `GameModule` asset** — *Assets > Create > MR Board Game > Game Module*, saved beside the
+   game (see `Assets/Games/Bash/BashModule.asset`). It carries the menu key, the scene name, the
+   label, a rules `TextAsset`, any extra menu keys, and whether the laser pointer stays live outside
+   the menu.
+3. **A row in `Assets/Resources/GameCatalog.asset`**, and the scene in `EditorBuildSettings`.
+
+That is the whole list. `MenuControl` builds the menu key from the catalog, `GameRoutes` reads the
+catalog, and the rules panel reads the module — none of them learns the game's name.
+
+Optionally, implement **`IGameSession`** on whatever already owns the game's state and register it
+with `GameSessionRegistry` in `Awake`/`OnNetworkSpawn`. That is how a game gets a reset hook when it
+is picked (`OnGameSelected`), behaviour behind its own menu keys (`InvokeMenuAction`), and a label
+under every other player's nametag (`AvatarBadgeForSeat`). Doing nothing / returning null is the
+normal answer — `BashRoot` implements one of the three, `PlateauGame` two, Stairs none.
 
 Put the board **at the origin** and nothing else. If a board needs more room, change
 `PlayerRing.Radius` rather than moving boards per scene.
+
+**The two shared things that cannot be avoided**, both only if the game spawns `NetworkObject`s:
+`Assets/DefaultNetworkPrefabs.asset` (`ForceSamePrefabs` folds the prefab *set* into the join
+handshake, so it is global by construction) and the build scene list. Plateau sidesteps the first by
+putting its state on the already-registered `Room Anchor.prefab` and rebuilding pieces as local
+visuals; BASH does not, and registers `Base` and `NetworkCannonLine`.
 
 ## Conventions that break silently
 
@@ -219,6 +226,13 @@ without it the bridge rules have no seed).
 `Cube` on `Soldier`, `Parshendi`, `Shardbearer` and `Bridge`; `Cylinder` on `Bridge Spots`. Two of
 those (`face`, `tornado`) are nested-prefab **modification overrides**, so grepping `Player.prefab`
 for `m_Name:` will not find them — look for `propertyPath: m_Name`.
+
+`Menu1.prefab` / `Menu2.prefab` add three: **`Row1`** (the container every key is parented to) and
+the two inactive keys **`GameKeyTemplate`** and **`ActionKeyTemplate`**, which `MenuControl` clones
+once per catalog entry. They exist so the generated keys inherit the authored collider, rigidbody,
+materials and label scale rather than having them set from code — `Key.prefab` is the *lobby
+keyboard's* key and its label sits at a different offset. Delete or rename one and the menu opens
+empty; `MenuControl` logs an error rather than failing silently.
 
 **Sibling order under `Plateaus` is the plateau index.** Reordering those 41 children renumbers the
 whole board, and the numbers are on the wire. Adding one at the end is safe.
@@ -262,10 +276,12 @@ build error for every scene at once.
 - `NetworkReconnectHandler.cs` is **attached to nothing**.
 - `Assets/Scenes/GameScene.unity` — legacy, unreachable, still at build index 3.
 - `Assets/Scenes/SampleScene/` — lighting data for a scene that no longer exists.
-- `Assets/Resources/RulesCanvas.prefab` and `Assets/Editor/SetupRulesMenu.cs` — nothing loads that
-  prefab; `MenuControl.OpenMenu1` builds the rules canvas procedurally.
 - `MenuControl.worldRoot` is unassigned in every scene, so the board is not hidden behind an open
-  menu. `MenuControl` also has a live `Passthrough` handler with no key in either menu prefab.
+  menu. `MenuControl` also has a live `Passthrough` handler that nothing builds a key for — to make
+  it reachable, generate one in `BuildKeys` beside `Place Anchor`.
+- `PlayerControls` resolves the badge label's icon child as **`Gemheart`**, a name Plateau chose,
+  even though what the label says is now the loaded game's business (`IGameSession.AvatarBadgeForSeat`).
+  Cosmetic; renaming it means editing `Player.prefab`, which moves the join config hash.
 - Root clutter, not source: `BoardGames.apk`, `build/`, `*_BurstDebugInformation_DoNotShip/`, three
   `.sln` files — and **`BoardAnchor.dll`, a tracked binary at the repo root.** That last one is a
   trap for anything invoking `csc` from the project root: without an explicit `-out:`, Roslyn names

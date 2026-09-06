@@ -40,12 +40,17 @@ public class GameSelector : NetworkBehaviour
             return;
         }
 
-        // Before the load, not after: picking a game a game is allowed to reset it, and
-        // LoadGameScene below deliberately does nothing when the room is already in that scene,
-        // so a scene-load hook would never fire for Chasms -> Chasms.
-        if (PlateauGame.Instance != null)
+        // Before the load, not after: picking the game the room is already in is allowed to reset
+        // it, and LoadGameScene below deliberately does nothing in that case, so a scene-load hook
+        // would never fire for Chasms -> Chasms.
+        //
+        // Resolved by key, not by active scene — the room is still in the *previous* game here, and
+        // the game being selected has almost certainly not loaded its board yet. A session that
+        // wants to reset has to latch and act later; see IGameSession.OnGameSelected.
+        IGameSession session = GameSessionRegistry.ForKey(gameKey);
+        if (session != null)
         {
-            PlateauGame.Instance.HandleGameRequested(gameKey);
+            session.OnGameSelected();
         }
 
         LoadGameScene(sceneName);

@@ -186,28 +186,33 @@ public class PlayerControls : NetworkBehaviour
     }
 
     /// <summary>
-    /// The held-gemheart score, floating just below the nametag — visible to everyone but the
-    /// player it belongs to, exactly like the nametag itself (OnNetworkSpawn deactivates every
-    /// child of your own avatar, ScoreTag included). Only shown while a Plateau game is actually
-    /// live; a missing ScoreTag child is tolerated here (logged once already, by FindChild) rather
-    /// than folded into the hard guard above it, so a prefab mistake costs only this label, not the
-    /// whole remote avatar.
+    /// A per-seat label floating just below the nametag — visible to everyone but the player it
+    /// belongs to, exactly like the nametag itself (OnNetworkSpawn deactivates every child of your
+    /// own avatar, ScoreTag included). A missing ScoreTag child is tolerated here (logged once
+    /// already, by FindChild) rather than folded into the hard guard above it, so a prefab mistake
+    /// costs only this label, not the whole remote avatar.
+    ///
+    /// What it says is the loaded game's business, not this class's. It used to read
+    /// PlateauGame.Instance.ScoreForSeat directly, which put Chasms' gemheart score on the shared
+    /// avatar and meant a fourth game wanting a label had to edit this file. A game with nothing to
+    /// say returns null and both labels stay hidden, which is the normal case — Stairs and BASH
+    /// both do.
     /// </summary>
     private void UpdateScoreTag()
     {
-        bool isChasmGame = SceneManager.GetActiveScene().name == GameRoutes.PlateauSceneName;
-        PlateauGame game = PlateauGame.Instance;
-        bool shouldShow = isChasmGame && game != null && game.IsSpawned;
+        IGameSession session = GameSessionRegistry.Active;
+        string badge = session != null ? session.AvatarBadgeForSeat(spawnSlot.Value) : null;
+        bool shouldShow = badge != null;
 
         if (scoreLabelTransform != null && scoreLabel != null)
         {
             scoreLabelTransform.gameObject.SetActive(shouldShow);
             if (shouldShow)
             {
-                scoreLabel.SetText(game.ScoreForSeat(spawnSlot.Value).ToString());
+                scoreLabel.SetText(badge);
             }
         }
-        
+
         if (gemheartLabelTransform != null)
         {
             gemheartLabelTransform.gameObject.SetActive(shouldShow);

@@ -6,6 +6,33 @@ grab, the player ring, avatar replication, menus, passthrough, input and in-head
 Read the root [`CLAUDE.md`](../../CLAUDE.md) first. Nothing in this folder may reference a
 specific game — see [Adding a game](../../CLAUDE.md#adding-a-game).
 
+## Games as data — `Assets/Scripts/Games/`
+
+Four small types are what let the rest of this folder stop naming games.
+
+| Type | What it is |
+| --- | --- |
+| `GameModule` | A `ScriptableObject` per game: menu key, scene name, label, rules `TextAsset`, extra menu keys, and whether the pointer stays live. One asset per game, kept beside the game (`Assets/Games/Bash/BashModule.asset`). |
+| `GameCatalog` | The list, at `Assets/Resources/GameCatalog.asset`. Loaded by name because `GameRoutes` is static and `MenuControl` lives on `PersistentRig` — neither has an Inspector slot a scene could fill. `ActiveModule` resolves the loaded scene to its module. |
+| `IGameSession` | The only thing shared code is allowed to know about a game: `OnGameSelected`, `InvokeMenuAction`, `AvatarBadgeForSeat`. Doing nothing / returning null is the normal answer. |
+| `GameSessionRegistry` | Where games put themselves. Games register in `Awake`/`OnNetworkSpawn` and unregister on the way out. |
+
+**The registry has two lookups and conflating them is a bug.** `ForKey` is for "the room is
+switching to this game" — `GameSelector` calls it *before* `LoadScene`, so it cannot be keyed off
+the active scene; `PlateauGame` is reachable there only because it rides on the persistent
+`Room Anchor` and is registered the whole time. `Active` is for "the game on screen now" — menu
+actions and avatar badges — and resolves through the catalog, because in `BashGame` both `BashRoot`
+and the still-registered `PlateauGame` are present and "last one to register" would be a coin toss.
+
+`GameRoutes` survives as a thin façade over the catalog (`DefaultScene`, `IsGameKey`, `IsGameScene`,
+`TryGetScene`) so its dozen call sites did not have to change. It used to be a `Dictionary` literal
+with a `const` pair per game.
+
+This replaced four places where infrastructure named a game: `GameSelector` calling
+`PlateauGame.Instance.HandleGameRequested`, `PlayerControls` reading Plateau's gemheart score onto
+the shared avatar, and two `MenuControl` cases holding direct type references to `ControlListener`
+and `IslandManager`.
+
 ## Session flow
 
 1. `OpeningScene` loads. `RelayVivox.Start()` initializes Unity Services and signs in
@@ -85,7 +112,7 @@ switch — see [Switching games](#switching-games) for what still runs on that s
 `OpeningScene`'s and `GameScene`'s original local rigs were both hand-placed at (facing the
 keyboard / the menu, respectively). `CameraController2.PlaceAtRingSlot` repositions the rig at
 runtime for actual game scenes (`GameRoutes.IsGameScene` — `StairsGame`, `ChasmGame` and
-`BashGame`, i.e. every value in `GameRoutes.SceneByKey`), so the baked default only matters for the
+`BashGame`, i.e. every `sceneName` in `GameCatalog`), so the baked default only matters for the
 two scenes that never call it: `OpeningScene` and the legacy `GameScene`. Do not "fix" this position
 to somewhere sensible for a game scene — that breaks the lobby instead.
 
@@ -100,11 +127,13 @@ instead.
 - `SpawnMenu` (the left-hand piece-buying menu) lives under the shared `Left Hand` even though only
   `PlateauSpawnMenu` (ChasmGame-only) ever opens it — it has to live somewhere every scene shares,
   and nothing in another scene references it, so its presence there is harmless.
-- `MenuControl.keepPointerAlwaysOn` is `false` on the shared instance (`StairsGame`'s authored
-  value — "the lobby and StairsGame keep the menu-only behaviour they were authored with").
-  `PlateauSpawnMenu.Bind()` opts ChasmGame in through `MenuControl.SetKeepPointerAlwaysOn(true)`
-  the moment it resolves `menu`, rather than changing the shared default and taking the other
-  scenes down with it.
+- `MenuControl.keepPointerAlwaysOn` is no longer an authored default at all. `AdoptSceneDefaults`
+  overwrites it from the incoming scene's `GameModule.keepPointerAlwaysOn` on every scene change,
+  so it is right from the **first frame** of the scene and correct in *both* directions. It used to
+  be a sticky field that only ever got set true, by `PlateauSpawnMenu.Bind()` on some later frame —
+  so the pointer was dead for the opening frames of ChasmGame, and once ChasmGame had switched it on
+  it stayed on in Stairs too. `PlateauSpawnMenu` and `ControlListener` still call
+  `SetKeepPointerAlwaysOn(true)`; both are now redundant agreements with their own module.
 
 **The pointer's active state does not survive a scene switch on its own any more.**
 `MenuControl.OpenMenu1`/`CloseMenu` toggle it, and `MenuControl.ApplyPointerDefault` resets it to
@@ -121,11 +150,11 @@ Two consequences that have already caused bugs:
   `ApplyPointerDefault` returns `keepPointerAlwaysOn || !GameRoutes.IsGameScene(...)`, which is
   true in the lobby. Unity gives no ordering guarantee between two `Start()` calls, and when these
   two disagreed the pointer came up dead and no key on the lobby keyboard could be pressed.
-- **Never assign `keepPointerAlwaysOn` directly; call `SetKeepPointerAlwaysOn`.** The
-  `activeSceneChanged` reset has already run and switched the pointer off by the time any scene
-  component's first `Update` opts in, so a bare field write leaves the pointer dead until the
-  player opens and closes the menu. The setter applies the flag and re-evaluates in one call.
-  `PlateauSelection` reads the flag and does not write it.
+- **Prefer setting it on the game's `GameModule`.** If a component really must override it mid-scene,
+  call `SetKeepPointerAlwaysOn` and never assign the field: `AdoptSceneDefaults` has already run and
+  switched the pointer off by the time any scene component's first `Update` opts in, so a bare field
+  write leaves the pointer dead until the player opens and closes the menu. The setter applies the
+  flag and re-evaluates in one call. `PlateauSelection` reads the flag and does not write it.
 
 **`GameController` is the one place with direct, non-`Find` serialized references into the rig**
 (`inputs`, `rh`, `lh`, `pointer`) rather than the `Find`-by-name convention everything else here
@@ -294,9 +323,13 @@ exist for that and is gone. There is a fallback to finding `Username`/`ScoreTag`
 > world-position-preserving offsets, and every label ended up **6.5 m** from its root along the view
 > axis — present, correct, and nowhere near the player. See `bugFixes2.md` §2.
 
-- `ScoreTag` shows that seat's `PlateauGame.gemheartScores` entry, and only while a Plateau game is
-  actually live. Like the nametag it is visible to everyone *except* its owner, because
-  `OnNetworkSpawn` deactivates every child of your own avatar.
+- `ScoreTag` shows whatever the loaded game returns from
+  `IGameSession.AvatarBadgeForSeat(spawnSlot)`, and **null hides it** — which is the normal case,
+  since only Chasms has anything to say (that seat's `gemheartScores` entry). `PlayerControls` does
+  not know what the number means; it used to read `PlateauGame.Instance.ScoreForSeat` directly,
+  which put one game's score on the shared avatar. Like the nametag it is visible to everyone
+  *except* its owner, because `OnNetworkSpawn` deactivates every child of your own avatar.
+  The icon child beside it is still named `Gemheart`, which is Plateau's word for a generic slot.
 
 - **A remote player is two cones and a name.** `ShowRemoteHeadAndBody` is `false`: in passthrough
   their real head and body are already there, and a virtual copy is at best noise and at worst
@@ -333,31 +366,50 @@ Keys are dispatched by **`keyInfo.keyName` string**, never by child index. (The 
 resolved widgets with `GetChild(0).GetChild(9).GetChild(13)`, so re-skinning the prefab broke it
 with no compile error.) `pointerControl` reports `keyName`, not the visible label.
 
-`Menu1.prefab` holds seven keys — **`Stairs`**, **`Chasms`**, **`BASH`**, **`Place Anchor`**,
-**`Reset Game`**, **`Random Islands`**, **`Voice Chat`**. `Menu2.prefab` holds the other six: the
-same list without `Voice Chat`, which is host-only. `OpenMenu1` picks between the two prefabs.
+**The keys are built at runtime, not authored.** The prefabs hold only `Background`, `Row1`, the
+title, `Exit`, two **inactive template keys** — `GameKeyTemplate` and `ActionKeyTemplate` — and, in
+`Menu1` only, `Voice Chat`. `OpenMenu1` still picks between the two prefabs, because voice is a
+room-wide billed service and only the host is offered the switch. Everything else `MenuControl`
+clones on open:
 
-This is **`Menu1`, the room menu — not `SpawnMenu`**, the per-player piece menu on the left wrist,
-which is a separate prefab with its own key set and its own dispatcher
-(`PlateauSpawnMenu.HandleKey`). See [The spawn menu](Plateau/CLAUDE.md#the-spawn-menu--plateauspawnmenu).
+| Key | Where it comes from | Row1-local position |
+| --- | --- | --- |
+| one per game | `GameCatalog.games`, in catalog order | `x 0.9`, `z 0.163 − 0.149·i` |
+| `Place Anchor` | always | the next step down the same column |
+| the loaded game's own keys | `GameModule.menuActions` of the **active scene's** module | one row lower, spread about `x 0.91` |
 
-**Not every key shows in every scene.** `MenuControl.KeyScene` names the keys that belong to one
-game, and `ApplySceneKeyFilter` deactivates the rest on the menu instance as it is opened — which
-is why a game's keys cost one row in that dictionary rather than a third menu prefab to keep in
-step with the other two. Today only BASH's `Reset Game` and `Random Islands` are scoped; the five
-original keys are meaningful everywhere. The `HandleKey` cases still log-and-no-op when their
-target is missing, so the filter is a tidiness measure, not the guard.
+That replaced one authored key per game in *both* prefabs, a `case` per game in `HandleKey`, a
+`KeyScene` dictionary naming which key belonged to which scene, and an `ApplySceneKeyFilter` pass
+that hid the rest after the fact. Only the loaded game's action keys are ever built now, so there is
+nothing to filter.
 
-One key is still one-sided: **`Passthrough`**. `HandleKey` handles it, but no such key exists in
-either prefab (the Editor command that added it, `AddPassthroughMenuKey.cs`, was deleted) — the
-handler is live and unreachable.
+Cloning a template rather than instantiating `Key.prefab` is deliberate: `Key.prefab` is the *lobby
+keyboard's* key, its label sits at a different offset and scale, and `Row1` carries a non-uniform
+`(0.5, 50, 0.815)` scale that the authored key scales were chosen against. Cloning something already
+correct in that hierarchy keeps all of it out of the code.
+
+`HandleKey` knows exactly three keys — `Passthrough`, `Voice Chat`, `Place Anchor`. Anything else is
+either a game key (`GameRoutes.IsGameKey` → `GameSelector.RequestGame`) or the loaded game's own
+action, handed to `GameSessionRegistry.Active.InvokeMenuAction`. **Nothing in `MenuControl` names a
+game, and adding one must not change that.**
+
+Past about **four** games the column pushes the action row into the authored `Voice Chat` key at
+`z −0.631` and then off the panel; `BuildKeys` warns. Fixing it properly means either two columns or
+generating `Voice Chat` too — which would also collapse `Menu1`/`Menu2` into one prefab.
+
+**`Passthrough` is still one-sided**: `HandleKey` handles it and nothing builds a key for it. To
+make it reachable, generate one in `BuildKeys` beside `Place Anchor`.
 
 An unknown key is deliberately inert and logs.
 
+This is **the room menu — not `SpawnMenu`**, the per-player piece menu on the left wrist, which is a
+separate prefab with its own key set and its own dispatcher (`PlateauSpawnMenu.HandleKey`). See
+[The spawn menu](Plateau/CLAUDE.md#the-spawn-menu--plateauspawnmenu).
+
 `pointerControl` fires on trigger colliders tagged **`key`** and stretches the visible beam to the
 hit — but in a game scene `PointerBeam` overwrites the beam length absolutely every frame, and
-`MenuControl.keepPointerAlwaysOn` (opted into by `PlateauSpawnMenu.Bind()`, ChasmGame only) leaves
-the pointer switched on outside the menu. See [The pointer](Plateau/CLAUDE.md#the-pointer) and
+`MenuControl.keepPointerAlwaysOn` (taken from the loaded game's `GameModule`; true for Chasms and
+BASH) leaves the pointer switched on outside the menu. See [The pointer](Plateau/CLAUDE.md#the-pointer) and
 [The persistent rig](#the-persistent-rig).
 
 `GrabControl` (on `Left Grabber` / `Right Grabber`) tracks colliders tagged **`Grabbable`**;
