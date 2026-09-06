@@ -304,7 +304,7 @@ public class PlateauPieceView : MonoBehaviour
                 // whenever the plateaus differ in size.
                 Transform spot = game.SpotForEdge(pb.edge);
                 Transform bar = spot != null
-                    ? (PlateauBoard.FindDescendant(spot, PlateauConst.BridgeBarName) ?? spot)
+                    ? (HierarchyUtils.FindDescendant(spot, PlateauConst.BridgeBarName) ?? spot)
                     : null;
 
                 Vector3 localMid;
@@ -660,7 +660,7 @@ public class PlateauPieceView : MonoBehaviour
 
         // Children by name, with an error on a miss — the same contract as Player.prefab's avatar
         // parts. Renaming one of these compiles fine and would otherwise fail silently.
-        tag.countTransform = PlateauBoard.FindDescendant(tr, PlateauConst.CountChildName);
+        tag.countTransform = HierarchyUtils.FindDescendant(tr, PlateauConst.CountChildName);
         if (tag.countTransform == null)
         {
             Debug.LogError("PlateauPieceView: " + prefab.name + " has no child named \"" +
@@ -676,7 +676,7 @@ public class PlateauPieceView : MonoBehaviour
             }
         }
 
-        Transform disc = PlateauBoard.FindDescendant(tr, PlateauConst.DiscChildName);
+        Transform disc = HierarchyUtils.FindDescendant(tr, PlateauConst.DiscChildName);
         if (disc == null)
         {
             Debug.LogError("PlateauPieceView: " + prefab.name + " has no child named \"" +

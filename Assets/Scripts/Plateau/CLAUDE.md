@@ -20,8 +20,9 @@ movement rules. They are placed and removed by hand, on whichever plateau the pl
 which is what makes it possible to play the unimplemented parts of the rules by agreement around the
 table.
 
-All of it lives in `Assets/Scripts/Plateau/`. A subfolder with no `.asmdef` still compiles into
-`Assembly-CSharp`, so this changes nothing structurally.
+All of it lives in `Assets/Scripts/Plateau/` and compiles into **`MRBoardGame.Plateau`**, which
+references `MRBoardGame.Shared` and nothing else. BASH is invisible from here and this is invisible
+from BASH — enforced by the compiler, not by convention.
 
 ### A piece is a stack
 

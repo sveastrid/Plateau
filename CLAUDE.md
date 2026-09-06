@@ -84,21 +84,32 @@ agree; changing one means changing the other.
 - **No CLI tooling, no CI, no tests, no package scripts.** All builds go through the Editor
   (File > Build Settings, Android). `com.unity.test-framework` is in the manifest but there are no
   test assemblies and no `Tests/` folders.
+- **Four assemblies, and the boundary is the point.** `MRBoardGame.Shared` (`Assets/Scripts/`)
+  references neither game; `MRBoardGame.Plateau` and `MRBoardGame.Bash` each reference Shared and
+  **not each other**; `MRBoardGame.Editor` is Editor-only. `Assembly-CSharp` now holds no
+  first-party code at all. A game reaching into another game, or shared code reaching into a game,
+  is a compile error instead of something you discover in a headset — which is how BASH was caught
+  calling `PlateauBoard.FindDescendant`. Editing one game recompiles only that assembly.
 - **C# can still be compile-checked headlessly**, without opening the Editor or taking the project
-  lock. Take `<DefineConstants>` and the `<HintPath>` references from `Assembly-CSharp.csproj` (the
-  Editor regenerates it; its `<Compile Include=>` list goes stale, so glob `Assets/Scripts` yourself),
-  write a csc response file, and run Unity's **.NET** Roslyn —
+  lock. Since the assembly split there is one `.csproj` per assembly — `MRBoardGame.Shared.csproj`,
+  `MRBoardGame.Plateau.csproj`, `MRBoardGame.Bash.csproj`, `MRBoardGame.Editor.csproj`. Take
+  `<DefineConstants>` and the `<HintPath>` references from the one you are checking (the Editor
+  regenerates them; the `<Compile Include=>` list goes stale, so glob the folder yourself), write a
+  csc response file, and run Unity's **.NET** Roslyn —
   `Editor/Data/DotNetSdk/dotnet.exe Editor/Data/DotNetSdk/sdk/<ver>/Roslyn/bincore/csc.dll @rsp`.
   Not `MonoBleedingEdge`'s `csc.exe`, which fails to load `System.Text.Encoding.CodePages` and never
-  reaches compilation. `Assets/Editor/*.cs` needs the same treatment against
-  `Assembly-CSharp-Editor.csproj` plus a reference to the runtime assembly you just built.
+  reaches compilation. A game assembly also needs a `-r:` on the Shared DLL you just built.
   **Always pass an explicit `-out:` pointing outside the repo** — see the `BoardAnchor.dll` trap
   under [Dead or unwired code](#dead-or-unwired-code). Expect pre-existing `CS0618` warnings on
   `ServerRpcAttribute.RequireOwnership` and `FindFirstObjectByType`; ignore them. This checks C#
   only: it does not run Netcode's ILPP, so RPC / `NetworkVariable` codegen problems still need the
   Editor, and it cannot validate scene or prefab YAML wiring.
-- `Library/ScriptAssemblies/Assembly-CSharp.dll` is only rebuilt when the Editor next opens, so a
-  timestamp older than `Assets/Scripts/*.cs` means the current code has **never been compiled**.
+- **With the Editor already open, just let it compile** — trigger *Assets > Refresh*, wait for the
+  domain reload, and read the console. That is the only way to see an assembly-boundary error.
+  Compiler messages arrive in the console typed as `Log`, not `Error`, so filter on the text
+  `error CS` rather than on severity.
+- `Library/ScriptAssemblies/MRBoardGame.*.dll` are only rebuilt when the Editor next opens, so a
+  timestamp older than the matching `.cs` files means the current code has **never been compiled**.
   Check that before trusting that edits are sound.
 - **Build scene order** (`ProjectSettings/EditorBuildSettings.asset`) is `OpeningScene` (0) →
   `StairsGame` (1) → `ChasmGame` (2) → `GameScene` (3) → `BashGame` (4). Every scene a room can
@@ -180,11 +191,14 @@ Copy the shape and fill in one asset. **No shared source file is edited, and nei
    `Input Reader`, `Menu Manager`, `XRRig` and `Directional Light` must **not** be in it — they come
    from `PersistentRig`, and a second object with one of those names makes `Find` pick
    non-deterministically.
-2. **A `GameModule` asset** — *Assets > Create > MR Board Game > Game Module*, saved beside the
+2. **An `.asmdef`** in the scripts folder, referencing `MRBoardGame.Shared` and **not** another
+   game — copy `Assets/Scripts/Bash/MRBoardGame.Bash.asmdef`. This is what stops the new game
+   destabilising the existing ones.
+3. **A `GameModule` asset** — *Assets > Create > MR Board Game > Game Module*, saved beside the
    game (see `Assets/Games/Bash/BashModule.asset`). It carries the menu key, the scene name, the
    label, a rules `TextAsset`, any extra menu keys, and whether the laser pointer stays live outside
    the menu.
-3. **A row in `Assets/Resources/GameCatalog.asset`**, and the scene in `EditorBuildSettings`.
+4. **A row in `Assets/Resources/GameCatalog.asset`**, and the scene in `EditorBuildSettings`.
 
 That is the whole list. `MenuControl` builds the menu key from the catalog, `GameRoutes` reads the
 catalog, and the rules panel reads the module — none of them learns the game's name.
@@ -267,9 +281,10 @@ owner-written. Every `ServerRpc` that mutates shared state validates the sender.
 `OnDestroy`/`OnNetworkDespawn` guarded by `if (Instance == this)`. Keep that guard — `RoomAnchor` and
 `PlateauGame` despawn and respawn on a reconnect.
 
-**There are no namespaces and no `.asmdef` files.** All 52 scripts compile into one
-`Assembly-CSharp` in the global namespace, so a new class that collides with an existing name is a
-build error for every scene at once.
+**There are still no namespaces.** Every class sits in the global namespace, so a name that collides
+with something in a *referenced* assembly is a real hazard — `HierarchyUtils` is named that rather
+than `Hierarchy` because Unity 6 added a `Unity.Hierarchy` namespace. The assembly boundaries below
+mean two *games* can no longer collide with each other, which was the worse case.
 
 ## Dead or unwired code
 

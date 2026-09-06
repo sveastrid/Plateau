@@ -326,7 +326,7 @@ public class PlateauChooser : MonoBehaviour
         if (beam == null)
         {
             GameObject rig = GameObject.Find("XRRig");
-            Transform pointer = rig != null ? PlateauBoard.FindDescendant(rig.transform, "Pointer") : null;
+            Transform pointer = rig != null ? HierarchyUtils.FindDescendant(rig.transform, "Pointer") : null;
             beam = pointer != null ? pointer.GetComponent<PointerBeam>() : null;
         }
 

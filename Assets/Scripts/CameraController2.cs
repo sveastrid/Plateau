@@ -77,7 +77,7 @@ public class CameraController2 : MonoBehaviour
         // and renaming it dropped the value every scene had serialized against the old name.
         if (LeftHand == null)
         {
-            LeftHand = FindDescendant(transform, "Left Hand");
+            LeftHand = HierarchyUtils.FindDescendant(transform, "Left Hand");
             if (LeftHand == null)
             {
                 Debug.LogWarning("CameraController2: no \"Left Hand\" under " + name +
@@ -240,31 +240,6 @@ public class CameraController2 : MonoBehaviour
 
         myPlayer = player;
         PlaceAtRingSlot(player.spawnSlot.Value);
-    }
-
-    /// <summary>
-    /// The named descendant of this rig, at any depth. Transform.Find only looks one level down
-    /// unless it is given the whole path, and "Camera Offset/Left Hand" is exactly the kind of
-    /// hardcoded path this project keeps getting bitten by.
-    /// </summary>
-    private static Transform FindDescendant(Transform parent, string childName)
-    {
-        for (int i = 0; i < parent.childCount; i++)
-        {
-            Transform child = parent.GetChild(i);
-            if (child.name == childName)
-            {
-                return child;
-            }
-
-            Transform found = FindDescendant(child, childName);
-            if (found != null)
-            {
-                return found;
-            }
-        }
-
-        return null;
     }
 
     /// <summary>

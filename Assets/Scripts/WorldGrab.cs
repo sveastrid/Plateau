@@ -65,20 +65,20 @@ public class WorldGrab : MonoBehaviour
         }
         if (leftHand == null)
         {
-            leftHand = FindDescendant(transform, "Left Hand");
+            leftHand = HierarchyUtils.FindDescendant(transform, "Left Hand");
         }
         if (rightHand == null)
         {
-            rightHand = FindDescendant(transform, "Right Hand");
+            rightHand = HierarchyUtils.FindDescendant(transform, "Right Hand");
         }
         if (leftGrabber == null)
         {
-            Transform t = FindDescendant(transform, "Left Grabber");
+            Transform t = HierarchyUtils.FindDescendant(transform, "Left Grabber");
             leftGrabber = t != null ? t.GetComponent<GrabControl>() : null;
         }
         if (rightGrabber == null)
         {
-            Transform t = FindDescendant(transform, "Right Grabber");
+            Transform t = HierarchyUtils.FindDescendant(transform, "Right Grabber");
             rightGrabber = t != null ? t.GetComponent<GrabControl>() : null;
         }
 
@@ -313,30 +313,5 @@ public class WorldGrab : MonoBehaviour
         }
         yaw = Mathf.Atan2(axis.x, axis.z) * Mathf.Rad2Deg;
         return true;
-    }
-
-    /// <summary>
-    /// The named descendant of this rig, at any depth. Transform.Find only looks one level down
-    /// unless it is given the whole path, and "Camera Offset/Left Hand" is exactly the kind of
-    /// hardcoded path this project keeps getting bitten by.
-    /// </summary>
-    private static Transform FindDescendant(Transform parent, string childName)
-    {
-        for (int i = 0; i < parent.childCount; i++)
-        {
-            Transform child = parent.GetChild(i);
-            if (child.name == childName)
-            {
-                return child;
-            }
-
-            Transform found = FindDescendant(child, childName);
-            if (found != null)
-            {
-                return found;
-            }
-        }
-
-        return null;
     }
 }

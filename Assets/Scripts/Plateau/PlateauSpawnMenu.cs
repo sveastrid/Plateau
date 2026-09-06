@@ -355,11 +355,11 @@ public class PlateauSpawnMenu : MonoBehaviour
             {
                 if (leftHand == null)
                 {
-                    leftHand = PlateauBoard.FindDescendant(rig.transform, "Left Hand");
+                    leftHand = HierarchyUtils.FindDescendant(rig.transform, "Left Hand");
                 }
                 if (pointer == null)
                 {
-                    Transform p = PlateauBoard.FindDescendant(rig.transform, "Pointer");
+                    Transform p = HierarchyUtils.FindDescendant(rig.transform, "Pointer");
                     pointer = p != null ? p.GetComponent<pointerControl>() : null;
                 }
             }
@@ -367,17 +367,17 @@ public class PlateauSpawnMenu : MonoBehaviour
         
         if (leftHand != null && menuInstance == null)
         {
-            Transform menuT = PlateauBoard.FindDescendant(leftHand, "SpawnMenu");
+            Transform menuT = HierarchyUtils.FindDescendant(leftHand, "SpawnMenu");
             if (menuT != null)
             {
                 menuInstance = menuT.gameObject;
                 menuInstance.SetActive(false); // default to off
 
-                Transform background = PlateauBoard.FindDescendant(menuT, "Background");
+                Transform background = HierarchyUtils.FindDescendant(menuT, "Background");
                 backgroundRenderer = background != null ? background.GetComponent<Renderer>() : null;
                 backgroundTint = backgroundRenderer != null ? backgroundRenderer.gameObject.AddComponent<PlateauTint>() : null;
 
-                Transform scoreTextTransform = PlateauBoard.FindDescendant(menuT, "ScoreText");
+                Transform scoreTextTransform = HierarchyUtils.FindDescendant(menuT, "ScoreText");
                 scoreText = scoreTextTransform != null ? scoreTextTransform.GetComponent<TextMeshPro>() : null;
             }
         }

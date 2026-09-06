@@ -1,0 +1,22 @@
+{
+    "name": "MRBoardGame.Plateau",
+    "rootNamespace": "",
+    "references": [
+        "MRBoardGame.Shared",
+        "Unity.Netcode.Runtime",
+        "Unity.Collections",
+        "Unity.Mathematics",
+        "Unity.TextMeshPro",
+        "UnityEngine.UI",
+        "Unity.XR.CoreUtils"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

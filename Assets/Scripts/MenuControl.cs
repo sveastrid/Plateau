@@ -347,7 +347,7 @@ public class MenuControl : MonoBehaviour
     /// </summary>
     private void BuildKeys(GameObject menu)
     {
-        Transform row = FindDescendant(menu.transform, RowName);
+        Transform row = HierarchyUtils.FindDescendant(menu.transform, RowName);
         if (row == null)
         {
             Debug.LogError("MenuControl: no '" + RowName + "' in " + menu.name + ", so no keys can " +
@@ -355,8 +355,8 @@ public class MenuControl : MonoBehaviour
             return;
         }
 
-        Transform gameTemplate = FindDescendant(row, GameKeyTemplateName);
-        Transform actionTemplate = FindDescendant(row, ActionKeyTemplateName);
+        Transform gameTemplate = HierarchyUtils.FindDescendant(row, GameKeyTemplateName);
+        Transform actionTemplate = HierarchyUtils.FindDescendant(row, ActionKeyTemplateName);
 
         if (gameTemplate == null)
         {
@@ -469,31 +469,6 @@ public class MenuControl : MonoBehaviour
         {
             info.keyLabel.SetText(label);
         }
-    }
-
-    /// <summary>
-    /// Search descendants by name at any depth, rather than by path.
-    ///
-    /// "Background/Row1" is exactly the kind of hardcoded path this project keeps getting bitten
-    /// by — CameraController2 and WorldGrab search the rig the same way for the same reason.
-    /// </summary>
-    private static Transform FindDescendant(Transform root, string childName)
-    {
-        if (root.name == childName)
-        {
-            return root;
-        }
-
-        for (int i = 0; i < root.childCount; i++)
-        {
-            Transform found = FindDescendant(root.GetChild(i), childName);
-            if (found != null)
-            {
-                return found;
-            }
-        }
-
-        return null;
     }
 
     // ------------------------------------------------------------------ the rules panel

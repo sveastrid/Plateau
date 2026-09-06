@@ -865,7 +865,7 @@ public class ControlListener : MonoBehaviour
         if (pointer == null)
         {
             GameObject rig = GameObject.Find("XRRig");
-            Transform t = rig != null ? PlateauBoard.FindDescendant(rig.transform, "Pointer") : null;
+            Transform t = rig != null ? HierarchyUtils.FindDescendant(rig.transform, "Pointer") : null;
             pointer = t != null ? t.GetComponent<pointerControl>() : null;
         }
 

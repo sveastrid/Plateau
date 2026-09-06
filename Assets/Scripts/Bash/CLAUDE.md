@@ -8,8 +8,14 @@ for anything outside this folder.
 ## The BASH game
 
 Ported from `D:\Unity_Stuff\BASH_U6`; the plan and its corrections are
-[`BASHUpdate.md`](../../../docs/BASHUpdate.md). All of it lives in `Assets/Scripts/Bash/`, another `.asmdef`-less
-subfolder that compiles into `Assembly-CSharp`.
+[`BASHUpdate.md`](../../../docs/BASHUpdate.md). All of it lives in `Assets/Scripts/Bash/` and
+compiles into **`MRBoardGame.Bash`**, which references `MRBoardGame.Shared` and nothing else.
+
+That boundary immediately caught a real leak: `ControlListener.Bind()` was calling
+**`PlateauBoard.FindDescendant`** — BASH reaching into Chasms for a utility, which compiled silently
+while everything shared one assembly. The helper is now `HierarchyUtils.FindDescendant` in Shared,
+which also folded away the four separate copies that had accumulated on `CameraController2`,
+`WorldGrab`, `PlateauBoard` and `MenuControl`.
 
 Four players sit around a 3 m square of water. Each owns a **base** carrying four gamepieces —
 boat (0), plane (1), sub (2), helicopter (3). Point at one of yours with the right trigger to select

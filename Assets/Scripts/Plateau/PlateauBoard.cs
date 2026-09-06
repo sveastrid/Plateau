@@ -190,11 +190,11 @@ public class PlateauBoard : MonoBehaviour
         }
         if (plateausRoot == null)
         {
-            plateausRoot = FindDescendant(worldRoot, "Plateaus");
+            plateausRoot = HierarchyUtils.FindDescendant(worldRoot, "Plateaus");
         }
         if (bridgesRoot == null)
         {
-            bridgesRoot = FindDescendant(worldRoot, "Bridges");
+            bridgesRoot = HierarchyUtils.FindDescendant(worldRoot, "Bridges");
         }
     }
 
@@ -332,7 +332,7 @@ public class PlateauBoard : MonoBehaviour
         for (int i = 0; i < bridgesRoot.childCount; i++)
         {
             Transform spot = bridgesRoot.GetChild(i);
-            Transform bar = FindDescendant(spot, PlateauConst.BridgeBarName);
+            Transform bar = HierarchyUtils.FindDescendant(spot, PlateauConst.BridgeBarName);
             if (bar == null)
             {
                 // Any single renderer will do — the bar is the only thing under a Bridge Spot.
@@ -586,30 +586,4 @@ public class PlateauBoard : MonoBehaviour
 
     Vector3 TopPoint(int p) => new Vector3(tiles[p].centre.x, tiles[p].topY, tiles[p].centre.z);
 
-    /// <summary>
-    /// The named descendant at any depth. Transform.Find only looks one level down unless given a
-    /// whole path, and a hardcoded path is exactly what this project keeps getting bitten by
-    /// (WorldGrab.FindDescendant, CameraController2).
-    /// </summary>
-    public static Transform FindDescendant(Transform parent, string childName)
-    {
-        if (parent == null)
-        {
-            return null;
-        }
-        for (int i = 0; i < parent.childCount; i++)
-        {
-            Transform child = parent.GetChild(i);
-            if (child.name == childName)
-            {
-                return child;
-            }
-            Transform found = FindDescendant(child, childName);
-            if (found != null)
-            {
-                return found;
-            }
-        }
-        return null;
-    }
 }

@@ -3,8 +3,19 @@
 The platform every game sits on: the persistent rig, colocation, the content frame and world
 grab, the player ring, avatar replication, menus, passthrough, input and in-headset debugging.
 
-Read the root [`CLAUDE.md`](../../CLAUDE.md) first. Nothing in this folder may reference a
-specific game — see [Adding a game](../../CLAUDE.md#adding-a-game).
+Read the root [`CLAUDE.md`](../../CLAUDE.md) first.
+
+This folder is the **`MRBoardGame.Shared`** assembly. It references neither game, and the compiler
+enforces that: `Assets/Scripts/Plateau/` and `Assets/Scripts/Bash/` carve themselves out into
+`MRBoardGame.Plateau` and `MRBoardGame.Bash`, both referencing Shared and not each other. Anything
+here that wants to know something about a game must go through
+[`IGameSession`](#games-as-data--assetsscriptsgames). See
+[Adding a game](../../CLAUDE.md#adding-a-game).
+
+`HierarchyUtils.FindDescendant` is the shared name-based hierarchy search. It replaced four
+identical private copies (`CameraController2`, `WorldGrab`, `PlateauBoard`, `MenuControl`), one of
+which BASH was borrowing across the game boundary. It is `HierarchyUtils` and not `Hierarchy`
+because Unity 6 added a `Unity.Hierarchy` namespace for the global name to collide with.
 
 ## Games as data — `Assets/Scripts/Games/`
 
