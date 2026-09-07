@@ -25,6 +25,7 @@ $docs = @(
     'Assets\Scripts\CLAUDE.md'
     'Assets\Scripts\Plateau\CLAUDE.md'
     'Assets\Scripts\Bash\CLAUDE.md'
+    'Assets\Scripts\Stairs\CLAUDE.md'
 )
 
 function Get-Slug([string]$heading) {

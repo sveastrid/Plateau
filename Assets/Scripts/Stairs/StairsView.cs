@@ -73,7 +73,6 @@ public class StairsView : MonoBehaviour
     StairsGame subscribed;
 
     Transform pieces;                       // towers and placed pawns
-    Transform labels;                       // tower height numbers, see BuildLabel for why separate
     Transform[] consoles = new Transform[StairsConst.Seats];
     Transform[] supplyRoots = new Transform[StairsConst.Seats];
     Transform[] capturedRoots = new Transform[StairsConst.Seats];
@@ -83,19 +82,15 @@ public class StairsView : MonoBehaviour
     StairsTint[] endTurnTints = new StairsTint[StairsConst.Seats];
 
     readonly List<GameObject>[] towerSteps = new List<GameObject>[StairsConst.CellCount];
+    readonly TMP_Text[] towerTopLabel = new TMP_Text[StairsConst.CellCount];
     readonly int[] towerOwnerShown = new int[StairsConst.CellCount];
-    readonly TMP_Text[] towerLabels = new TMP_Text[StairsConst.CellCount];
 
     readonly List<GameObject>[] supplySteps = new List<GameObject>[StairsConst.Seats];
     readonly List<GameObject>[] capturedSteps = new List<GameObject>[StairsConst.Seats];
     readonly GameObject[] pawns = new GameObject[StairsConst.Seats];
     readonly StairsTint[] pawnTints = new StairsTint[StairsConst.Seats];
 
-    TMP_Text labelTemplate;                 // the Height child on stepPrefabs[0], cloned per tower
-    readonly Color[] labelColors = new Color[StairsConst.Seats];
-
     float stepThickness = 0.03f;
-    float labelScale = 0.2f;
     Camera viewer;
     bool dirty = true;
     bool scaffolded;
@@ -150,27 +145,12 @@ public class StairsView : MonoBehaviour
         Renderer r = step.GetComponent<Renderer>();
         float meshHeight = r != null ? r.localBounds.size.y : 1f;
         stepThickness = step.transform.localScale.y * meshHeight;
-        labelScale = step.transform.localScale.x;
 
-        // The height number is cloned from the prefab's own Height child rather than built from
-        // code, so its font, size and colour stay where an author can see them.
         Transform authored = HierarchyUtils.FindDescendant(step.transform, StairsConst.StepLabelName);
-        labelTemplate = authored != null ? authored.GetComponent<TMP_Text>() : null;
-
-        if (labelTemplate == null)
+        if (authored == null)
         {
             Debug.LogWarning("StairsView: Step1.prefab has no '" + StairsConst.StepLabelName +
-                             "' TextMeshPro child, so towers will not show their height.");
-        }
-
-        for (int s = 0; s < StairsConst.Seats; s++)
-        {
-            GameObject prefab = StepPrefab(s);
-            Transform child = prefab != null
-                ? HierarchyUtils.FindDescendant(prefab.transform, StairsConst.StepLabelName)
-                : null;
-            TMP_Text tmp = child != null ? child.GetComponent<TMP_Text>() : null;
-            labelColors[s] = tmp != null ? tmp.color : Color.white;
+                             "' child, so towers will not show their height.");
         }
     }
 
@@ -184,7 +164,6 @@ public class StairsView : MonoBehaviour
         }
 
         pieces = NewChild(transform, "Pieces", Vector3.zero, Quaternion.identity);
-        labels = NewChild(transform, "Labels", Vector3.zero, Quaternion.identity);
 
         for (int seat = 0; seat < StairsConst.Seats; seat++)
         {
@@ -240,8 +219,8 @@ public class StairsView : MonoBehaviour
         rt.sizeDelta = LabelRect;
         rt.localScale = Vector3.one * StatusScale;
         rt.localPosition = new Vector3(StatusX, StatusY, 0f);
-        // The console's +Z faces the board, so the reader is at -Z: turn the text round to meet them.
-        rt.localRotation = Quaternion.Euler(0f, 180f, 0f);
+        // The console's +Z faces the board, so the reader is at -Z. Euler(0, 0, 0) points the text's forward away from the reader.
+        rt.localRotation = Quaternion.Euler(0f, 0f, 0f);
 
         tmp.fontSize = StatusFontSize;
         tmp.alignment = TextAlignmentOptions.Center;
@@ -284,9 +263,10 @@ public class StairsView : MonoBehaviour
         rt.sizeDelta = LabelRect;
         rt.localScale = Vector3.one * KeyScale;
         rt.localPosition = new Vector3(0f, EndTurnHeight + LabelLift, 0f);
-        // Lying on the slab, reading face-up. -90 about X, not +90: +90 points a transform's
-        // forward at the floor, which would put the text face-down under the key.
-        rt.localRotation = Quaternion.Euler(-90f, 0f, 0f);
+        // Lying on the slab, reading face-up. +90 about X, not -90: TMP faces +Z and is read from
+        // the -Z side, so a flat label wants its forward pointing at the FLOOR and its up pointing
+        // away from the reader. -90 puts the face at the ceiling and reads mirrored.
+        rt.localRotation = Quaternion.Euler(90f, 0f, 0f);
 
         tmp.fontSize = KeyFontSize;
         tmp.alignment = TextAlignmentOptions.Center;
@@ -390,7 +370,7 @@ public class StairsView : MonoBehaviour
 
         while (steps.Count < tower.height)
         {
-            GameObject step = BuildStep(tower.Owner, pieces, StairsPieceRole.TowerStep, tower.Owner, cell);
+            GameObject step = BuildStep(tower.Owner, pieces, StairsPieceRole.TowerStep, tower.Owner, cell, steps.Count + 1);
             if (step == null)
             {
                 break;
@@ -399,51 +379,14 @@ public class StairsView : MonoBehaviour
             steps.Add(step);
         }
 
-        UpdateTowerLabel(cell, tower, surface);
-    }
-
-    /// <summary>
-    /// The number on top of a tower — stepsRules.md has no such thing, but a stack of identical
-    /// tiles is unreadable at a glance across a real table.
-    ///
-    /// **The label is not a child of the step it sits on.** Step1/Step2 are scaled (0.2, 0.03, 0.2),
-    /// and Unity shears a rotated child of a non-uniformly scaled parent — so a number that turns to
-    /// face each player would squash and skew as it turned. Parenting it to `Labels`, which is at
-    /// identity under `Stairs Root`, keeps the scale uniform and the rotation free. The authored
-    /// Height child on the prefab is the template it is cloned from and is switched off on every
-    /// instantiated step.
-    /// </summary>
-    void UpdateTowerLabel(int cell, StairsTower tower, Vector3 surface)
-    {
-        if (labelTemplate == null)
+        // Only the top tile's number is ever visible, so only that one is worth turning each frame.
+        towerTopLabel[cell] = null;
+        if (steps.Count > 0)
         {
-            return;
+            Transform authored = HierarchyUtils.FindDescendant(steps[steps.Count - 1].transform,
+                                                               StairsConst.StepLabelName);
+            towerTopLabel[cell] = authored != null ? authored.GetComponent<TMP_Text>() : null;
         }
-
-        if (tower.IsEmpty)
-        {
-            if (towerLabels[cell] != null)
-            {
-                towerLabels[cell].gameObject.SetActive(false);
-            }
-            return;
-        }
-
-        TMP_Text label = towerLabels[cell];
-        if (label == null)
-        {
-            GameObject clone = Instantiate(labelTemplate.gameObject, labels, false);
-            clone.name = "Height " + cell;
-            label = clone.GetComponent<TMP_Text>();
-            label.rectTransform.localScale = Vector3.one * labelScale;
-            towerLabels[cell] = label;
-        }
-
-        label.gameObject.SetActive(true);
-        label.rectTransform.localPosition =
-            surface + Vector3.up * (tower.height * stepThickness + LabelLift);
-        label.color = labelColors[Mathf.Clamp(tower.Owner, 0, StairsConst.Seats - 1)];
-        label.SetText("{0}", tower.height);
     }
 
     void ReconcilePawn(int seat)
@@ -519,7 +462,7 @@ public class StairsView : MonoBehaviour
         while (steps.Count < want)
         {
             GameObject step = BuildStep(seat, supplyRoots[seat], StairsPieceRole.SupplyStep, seat,
-                                        StairsConst.NoCell);
+                                        StairsConst.NoCell, 0);
             if (step == null)
             {
                 break;
@@ -556,7 +499,7 @@ public class StairsView : MonoBehaviour
         while (steps.Count < want)
         {
             GameObject step = BuildStep(opponent, capturedRoots[seat], StairsPieceRole.CapturedStep,
-                                        seat, StairsConst.NoCell);
+                                        seat, StairsConst.NoCell, 0);
             if (step == null)
             {
                 break;
@@ -576,7 +519,7 @@ public class StairsView : MonoBehaviour
         }
 
         StairsSeat state = game.SeatState(seat);
-        StairsPhase phase = game.CurrentPhase;
+        StairsPhase phase = state.Phase;
 
         text.Length = 0;
         text.Append(StairsConst.SeatName(seat));
@@ -596,46 +539,34 @@ public class StairsView : MonoBehaviour
         text.Append(" - supply ").Append(state.supply);
         text.Append('\n');
 
-        if (phase == StairsPhase.GameOver)
+        switch (phase)
         {
-            int won = game.winner.Value;
-            text.Append(won == StairsConst.NoSeat
-                ? "game over - a draw"
-                : StairsConst.SeatName(won) + " wins");
-        }
-        else if (!game.SeatState(StairsConst.Opponent(seat)).IsOccupied)
-        {
-            text.Append("waiting for a second player");
-        }
-        else if (!game.IsSeatToAct(seat))
-        {
-            text.Append("waiting for ").Append(StairsConst.SeatName(StairsConst.Opponent(seat)));
-        }
-        else
-        {
-            switch (phase)
-            {
-                case StairsPhase.Setup:
-                    text.Append("drag your pawn onto an empty space");
-                    break;
-                case StairsPhase.Move:
-                    text.Append("move, then End Turn");
-                    break;
-                case StairsPhase.Build:
-                    text.Append("place ").Append(game.stepsToPlace.Value).Append(" step");
-                    if (game.stepsToPlace.Value != 1)
-                    {
-                        text.Append('s');
-                    }
-                    break;
-            }
+            case StairsPhase.GameOver:
+                int won = game.winner.Value;
+                text.Append(won == StairsConst.NoSeat
+                    ? "game over - a draw"
+                    : StairsConst.SeatName(won) + " wins");
+                break;
+            case StairsPhase.Setup:
+                text.Append("drag your pawn onto an empty space");
+                break;
+            case StairsPhase.Move:
+                text.Append("move, then End Turn");
+                break;
+            case StairsPhase.Build:
+                text.Append("place ").Append(state.stepsToPlace).Append(" step");
+                if (state.stepsToPlace != 1)
+                {
+                    text.Append('s');
+                }
+                break;
         }
 
         status.SetText(text);
 
         // The key only exists while it can be pressed, so it is never a target that does nothing —
         // and it appears the moment the player's move begins, which is what asks to be pressed.
-        SetEndTurnVisible(seat, phase == StairsPhase.Move && game.IsSeatToAct(seat));
+        SetEndTurnVisible(seat, phase == StairsPhase.Move);
     }
 
     void SetEndTurnVisible(int seat, bool visible)
@@ -648,7 +579,9 @@ public class StairsView : MonoBehaviour
 
     // ------------------------------------------------------------------ building one object
 
-    GameObject BuildStep(int owner, Transform parent, StairsPieceRole role, int seat, int cell)
+    /// <param name="number">This tile's own level in its tower, 1-based. 0 for a tile on a console,
+    /// which is not in a tower and shows nothing.</param>
+    GameObject BuildStep(int owner, Transform parent, StairsPieceRole role, int seat, int cell, int number)
     {
         GameObject prefab = StepPrefab(owner);
         if (prefab == null || parent == null)
@@ -659,12 +592,18 @@ public class StairsView : MonoBehaviour
         GameObject step = Instantiate(prefab, parent, false);
         step.transform.localRotation = Quaternion.identity;
 
-        // The prefab's own Height child is a template, cloned into Labels for the top of a tower and
-        // never drawn on the step itself. See UpdateTowerLabel.
-        Transform authoredLabel = HierarchyUtils.FindDescendant(step.transform, StairsConst.StepLabelName);
-        if (authoredLabel != null)
+        // The prefab's own Height child IS the number now — every tile says how many tiles are under
+        // it, itself included, so the top of a tower always reads as the tower's height. The ones
+        // beneath it are buried inside the tile above and are never seen.
+        Transform authored = HierarchyUtils.FindDescendant(step.transform, StairsConst.StepLabelName);
+        if (authored != null)
         {
-            authoredLabel.gameObject.SetActive(false);
+            TMP_Text label = number > 0 ? authored.GetComponent<TMP_Text>() : null;
+            if (label != null)
+            {
+                label.SetText("{0}", number);
+            }
+            authored.gameObject.SetActive(label != null);
         }
 
         StairsPieceTag.Attach(step, role, seat, cell);
@@ -755,7 +694,7 @@ public class StairsView : MonoBehaviour
 
         for (int cell = 0; cell < StairsConst.CellCount; cell++)
         {
-            TMP_Text label = towerLabels[cell];
+            TMP_Text label = towerTopLabel[cell];
             if (label == null || !label.gameObject.activeSelf)
             {
                 continue;

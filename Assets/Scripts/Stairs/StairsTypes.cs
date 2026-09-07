@@ -2,16 +2,19 @@ using System;
 using Unity.Netcode;
 
 /// <summary>
-/// The four states a Stairs turn can be in. These numbers go on the wire, so they may be appended
-/// to but never renumbered.
+/// The four states a Stairs turn can be in. Held per seat on StairsSeat, not once on the game: each
+/// seat runs its own Setup -> Move -> Build cycle and neither player ever waits on the other, so
+/// there is no game-wide phase. See bugFixesStairsGame.md §1.
+///
+/// These numbers go on the wire, so they may be appended to but never renumbered.
 /// </summary>
 public enum StairsPhase
 {
-    /// <summary>Each seated player drops their pawn on an empty space. stepsRules.md "Setup".</summary>
+    /// <summary>This seat drops its pawn on an empty space. stepsRules.md "Setup".</summary>
     Setup = 0,
-    /// <summary>The player whose turn it is may walk their pawn, then press End Turn.</summary>
+    /// <summary>This seat may walk its pawn, then press End Turn.</summary>
     Move = 1,
-    /// <summary>They place exactly <see cref="StairsGame.stepsToPlace"/> steps. "Action 2: Building".</summary>
+    /// <summary>They place exactly <see cref="StairsSeat.stepsToPlace"/> steps. "Action 2: Building".</summary>
     Build = 2,
     /// <summary>Somebody reached 12 captures, or a supply ran out.</summary>
     GameOver = 3,
@@ -143,18 +146,27 @@ public struct StairsTower : INetworkSerializable, IEquatable<StairsTower>
 /// </summary>
 public struct StairsSeat : INetworkSerializable, IEquatable<StairsSeat>
 {
-    /// <summary>PlayerControls.spawnSlot, or StairsConst.NoSeat while nobody holds this seat.</summary>
     public int ringSlot;
-
-    /// <summary>Where this player's pawn stands, or StairsConst.NoCell before Setup places it.</summary>
     public int pawnCell;
-
-    /// <summary>Steps still to build with. Reaching 0 in Build ends the game — stepsRules.md
-    /// "Supply Exhaustion Win".</summary>
     public byte supply;
-
-    /// <summary>Opponent tiles this player has taken. 12 wins.</summary>
     public byte captured;
+
+    /// <summary>This seat's own turn, as a StairsPhase. Each seat runs its own Setup -> Move ->
+    /// Build cycle and neither player ever waits on the other; see bugFixesStairsGame.md §1.
+    /// GameOver is written into BOTH seats at once, so it doubles as the game's end state.</summary>
+    public byte phase;
+
+    /// <summary>stepsRules.md "Momentum Rule", per seat. DirectionFree until this seat takes the
+    /// first step of its own turn, then locked to whichever way that step went.</summary>
+    public sbyte moveDirection;
+
+    /// <summary>Spaces this seat has moved in its current turn. Becomes the tiles it owes.</summary>
+    public byte stepsMoved;
+
+    /// <summary>Tiles this seat still owes in its own Build. Reaching 0 starts its next Move.</summary>
+    public byte stepsToPlace;
+
+    public StairsPhase Phase => (StairsPhase)phase;
 
     public static StairsSeat Fresh()
     {
@@ -163,6 +175,10 @@ public struct StairsSeat : INetworkSerializable, IEquatable<StairsSeat>
         s.pawnCell = StairsConst.NoCell;
         s.supply = StairsConst.StepsPerPlayer;
         s.captured = 0;
+        s.phase = (byte)StairsPhase.Setup;
+        s.moveDirection = (sbyte)StairsMoveRules.DirectionFree;
+        s.stepsMoved = 0;
+        s.stepsToPlace = 0;
         return s;
     }
 
@@ -175,10 +191,21 @@ public struct StairsSeat : INetworkSerializable, IEquatable<StairsSeat>
         serializer.SerializeValue(ref pawnCell);
         serializer.SerializeValue(ref supply);
         serializer.SerializeValue(ref captured);
+        serializer.SerializeValue(ref phase);
+        serializer.SerializeValue(ref moveDirection);
+        serializer.SerializeValue(ref stepsMoved);
+        serializer.SerializeValue(ref stepsToPlace);
     }
 
-    public bool Equals(StairsSeat other) => ringSlot == other.ringSlot && pawnCell == other.pawnCell &&
-                                            supply == other.supply && captured == other.captured;
+    public bool Equals(StairsSeat other) =>
+        ringSlot == other.ringSlot && pawnCell == other.pawnCell &&
+        supply == other.supply && captured == other.captured &&
+        phase == other.phase && moveDirection == other.moveDirection &&
+        stepsMoved == other.stepsMoved && stepsToPlace == other.stepsToPlace;
+
     public override bool Equals(object obj) => obj is StairsSeat s && Equals(s);
-    public override int GetHashCode() => (ringSlot << 20) ^ (pawnCell << 10) ^ (supply << 5) ^ captured;
+
+    public override int GetHashCode() =>
+        (ringSlot << 20) ^ (pawnCell << 10) ^ (supply << 5) ^ captured ^
+        (phase << 26) ^ (moveDirection << 24) ^ (stepsMoved << 16) ^ (stepsToPlace << 13);
 }

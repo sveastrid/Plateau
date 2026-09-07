@@ -3,12 +3,13 @@
 ## 🎯 Objective
 The primary goal is to be the first player to capture **12 of your opponent's tiles**. 
 
+> **Note:** The rules below describe the original board game. In this digital implementation, **there is no rigid turn order**. Either player may play at any time, including during the opponent's turn.
+
 ## 🎲 Setup
-1. **Player 1** places their pawn on an empty space on the board.
-2. **Player 2** then places their pawn on an empty space on the board.
+Players place their pawns on an empty space on the board. (Either player may place their pawn first.)
 
 ## 🚶 Gameplay & Movement
-On your turn, you may move your pawn across the board. 
+During your move, you may move your pawn across the board. 
 * **Valid Direction:** You can move to any of the 8 adjacent spaces.
 * **Elevation Limits:** The space you move to must be exactly **one level higher** or **one level lower** than your current space.
 * **Obstacles:** You cannot move onto a space occupied by the opponent's pawn or the opponent's tiles (unless you are making a capture).

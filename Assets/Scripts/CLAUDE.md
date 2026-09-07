@@ -486,7 +486,7 @@ Control map as it stands:
 
 | Input | Effect |
 | --- | --- |
-| Right trigger | select a menu / keyboard key; in Chasms, select a piece or a destination plateau or spin the chooser; in BASH, select one of your gamepieces; in Stairs, **held** it drags a pawn or a step onto the board, **tapped** it selects your pawn, takes a move, or presses End Turn |
+| Right trigger | select a menu / keyboard key; in Chasms, select a piece or a destination plateau or spin the chooser; in BASH, select one of your gamepieces; in Stairs, **held** it drags a pawn or a step onto the board — or lifts a tile already laid, to re-lay it — and **tapped** it selects your pawn, takes a move, or presses End Turn |
 | Left trigger | BASH only: fire — lob the arc, then commit the spin-aimed movement line |
 | `X` | open / close the menu |
 | `A` | re-align to the room anchor (`BoardAnchor.RequestReAlign`) |

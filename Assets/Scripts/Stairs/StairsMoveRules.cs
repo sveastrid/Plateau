@@ -180,6 +180,31 @@ public static class StairsMoveRules
     // ------------------------------------------------------------------ building
 
     /// <summary>
+    /// Whether <paramref name="seat"/> may lift the top tile off <paramref name="cell"/> and re-lay it
+    /// somewhere else.
+    ///
+    /// Not in stepsRules.md — this is the "fix a misplacement" affordance from bugFixesStairsGame.md §3,
+    /// and it is deliberately narrow: your own tiles only, the top of the stack only, and never a stack
+    /// with a pawn standing on it, which would move the floor out from under somebody. Where the tile
+    /// may then land is plain IsLegalBuild, so a re-laid tile can never end up on the opponent's tower
+    /// and "a tower has exactly one owner" still holds.
+    /// </summary>
+    public static bool IsLegalStepLift(View v, int seat, int cell)
+    {
+        if (!v.IsReady || !StairsConst.IsSeat(seat) || !StairsConst.IsCell(cell))
+        {
+            return false;
+        }
+
+        if (v.height[cell] == 0 || v.owner[cell] != seat)
+        {
+            return false;
+        }
+
+        return !v.HasPawnOn(cell);
+    }
+
+    /// <summary>
     /// stepsRules.md "Where to Build": empty squares, or on top of your own tiles. You may build
     /// under your own pawn, and may not build under the opponent's.
     ///

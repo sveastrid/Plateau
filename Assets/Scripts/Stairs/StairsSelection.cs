@@ -69,6 +69,8 @@ public class StairsSelection : MonoBehaviour
 
     GameObject ghost;
     StairsPieceRole dragRole;
+    /// <summary>Where a dragged TowerStep came from, or NoCell for anything else.</summary>
+    int dragFromCell = StairsConst.NoCell;
 
     // Press on trigger down, act on trigger up, so sliding off a target cancels it — the same
     // contract MenuControl gives every key in the project.
@@ -100,8 +102,11 @@ public class StairsSelection : MonoBehaviour
         Cancel();
     }
 
+    // ------------------------------------------------------------------ the root
+
     void Update()
     {
+        ClearHighlights();
         if (!Bind())
         {
             Cancel();
@@ -113,6 +118,12 @@ public class StairsSelection : MonoBehaviour
         StairsBoard board = StairsBoard.Instance;
 
         if (game == null || !game.IsSpawned || pieces == null || !pieces.IsReady || board == null)
+        {
+            Cancel();
+            return;
+        }
+
+        if (!Bind())
         {
             Cancel();
             return;
@@ -149,14 +160,20 @@ public class StairsSelection : MonoBehaviour
         switch (mode)
         {
             case Mode.PawnSelected:
-                return game.CurrentPhase == StairsPhase.Move && game.IsSeatToAct(seat) &&
-                       game.SeatState(seat).HasPawnOnBoard;
+                return game.PhaseOf(seat) == StairsPhase.Move && game.SeatState(seat).HasPawnOnBoard;
 
             case Mode.Dragging:
-                return dragRole == StairsPieceRole.Pawn
-                    ? game.CanPlacePawn(seat)
-                    : game.CurrentPhase == StairsPhase.Build && game.IsSeatToAct(seat) &&
-                      game.stepsToPlace.Value > 0;
+                switch (dragRole)
+                {
+                    case StairsPieceRole.Pawn:
+                        return game.CanPlacePawn(seat);
+                    case StairsPieceRole.SupplyStep:
+                        return game.PhaseOf(seat) == StairsPhase.Build && game.StepsToPlaceOf(seat) > 0;
+                    case StairsPieceRole.TowerStep:
+                        return game.CanLiftStep(seat, dragFromCell);
+                    default:
+                        return false;
+                }
 
             default:
                 return true;
@@ -253,7 +270,7 @@ public class StairsSelection : MonoBehaviour
             return;
         }
 
-        if (game.CurrentPhase != StairsPhase.Move || !game.IsSeatToAct(seat))
+        if (game.PhaseOf(seat) != StairsPhase.Move)
         {
             return;
         }
@@ -281,14 +298,22 @@ public class StairsSelection : MonoBehaviour
             return false;
         }
 
+        if (mode == Mode.PawnSelected)
+        {
+            return false;
+        }
+
         switch (piece.role)
         {
             case StairsPieceRole.Pawn:
                 return game.CanPlacePawn(seat);
 
             case StairsPieceRole.SupplyStep:
-                return game.CurrentPhase == StairsPhase.Build && game.IsSeatToAct(seat) &&
-                       game.stepsToPlace.Value > 0;
+                return game.PhaseOf(seat) == StairsPhase.Build && game.StepsToPlaceOf(seat) > 0;
+
+            case StairsPieceRole.TowerStep:
+                // Re-laying a tile you have already placed, at any time. bugFixesStairsGame.md §3.
+                return game.CanLiftStep(seat, piece.cell);
 
             default:
                 return false;
@@ -311,6 +336,7 @@ public class StairsSelection : MonoBehaviour
         tint.SetHighlight(GhostColor, GhostStrength);
 
         dragRole = piece.role;
+        dragFromCell = piece.cell;
         mode = Mode.Dragging;
     }
 
@@ -344,9 +370,13 @@ public class StairsSelection : MonoBehaviour
             {
                 game.RequestPlacePawnServerRpc(cell);
             }
-            else
+            else if (dragRole == StairsPieceRole.SupplyStep)
             {
                 game.RequestPlaceStepServerRpc(cell);
+            }
+            else if (dragRole == StairsPieceRole.TowerStep)
+            {
+                game.RequestMoveStepServerRpc(dragFromCell, cell);
             }
         }
 
@@ -411,7 +441,7 @@ public class StairsSelection : MonoBehaviour
             return;
         }
 
-        int direction = game.moveDirection.Value;
+        int direction = game.MoveDirectionOf(seat);
         StairsMoveRules.CollectMoves(view, seat, direction, legalCells);
 
         for (int i = 0; i < legalCells.Count; i++)
@@ -473,8 +503,7 @@ public class StairsSelection : MonoBehaviour
             }
 
             // Your own pawn, standing on the board, on your own move: the thing a click selects.
-            if (hit.role == StairsPieceRole.Pawn && hit.seat == seat &&
-                game.CurrentPhase == StairsPhase.Move && game.IsSeatToAct(seat))
+            if (hit.role == StairsPieceRole.Pawn && hit.seat == seat && game.PhaseOf(seat) == StairsPhase.Move)
             {
                 return pieces.PawnTint(seat);
             }

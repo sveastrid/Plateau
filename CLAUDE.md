@@ -297,8 +297,9 @@ scene should ever have its own copy of anything `PersistentRig` provides.
 
 Plateau adds `Plateaus` · `Bridges` · `Pieces` · `Pointer` · **`Central Plateau`** (exact string;
 without it the bridge rules have no seed). Stairs adds `Stairs Root` · `Cells` · `Board` — and
-`Board` for its **collider**, not its mesh: that is what the pointer ray lands on over a bare square,
-so losing it leaves every occupied cell clickable and every empty one dead.
+`Board` for its **collider**, not its mesh: the 64 cells have their own `BoxCollider`s, so what the
+slab catches is the 1 cm gaps between them and the overhang past the edge. `StairsBoard.Bake` logs an
+error if it goes missing.
 
 **Prefab child names** are equally load-bearing: `TagsRoot` (and `Username`, `ScoreTag`, `Gemheart`
 *inside* it), `PlayerLeft`, `PlayerRight`, `mainFace`, `tornado` on `Player.prefab`; `Count` and
@@ -385,10 +386,11 @@ are marked applied, corrected, or out of scope — **check the code before trust
 | --- | --- |
 | [`plateauRules.md`](docs/plateauRules.md) | Plateau's rules. Starting forces and movement are implemented; the rest is still the design target. It says 33 plateaus and the scene has 41 — the code counts children, so the doc is the stale one. |
 | [`BASHRules.md`](docs/BASHRules.md) | BASH's rules. |
-| [`stepsRules.md`](docs/stepsRules.md) | Stairs' rules. **Implemented in full**, both win conditions included; the readings taken where it is ambiguous are listed in [`Assets/Scripts/Stairs/CLAUDE.md`](Assets/Scripts/Stairs/CLAUDE.md). |
+| [`stepsRules.md`](docs/stepsRules.md) | Stairs' rules. **Implemented**, with the turn order deliberately removed — see `bugFixesStairsGame.md` §1. The readings taken where it is ambiguous are listed in [`Assets/Scripts/Stairs/CLAUDE.md`](Assets/Scripts/Stairs/CLAUDE.md). |
 | [`BASHUpdate.md`](docs/BASHUpdate.md) | **Applied.** Porting BASH in as a third game: GUID collisions, the world-space → `World Root` local conversion, the scene to build. §14 records where the port differed from the plan. |
 | [`BASHRulesUpdate.md`](docs/BASHRulesUpdate.md) | **Applied.** The rules rework that replaced BASH's joystick-steered shot with spin-aimed movement plus the boat/plane artillery arc. |
 | [`bridgeMovementUpdate.md`](docs/bridgeMovementUpdate.md) | **Applied.** Re-laying a bridge already on the board. Supersedes `bigFixes1.md` §4. |
+| [`bugFixesStairsGame.md`](docs/bugFixesStairsGame.md) | **Mostly applied.** Six changes to Stairs: out-of-turn play (the turn state moves onto the seat), the mirrored End Turn label, re-laying a placed tile, why a pawn would not move, the height number moving back onto the step prefab, and lifting the tiles a player owes. §1, §4 and §5 landed in full; §2 missed the tower billboard, §3 missed the local hide of the tile in hand, and **§6 was not built at all** — see its own status block and *Known rough edges* in [`Assets/Scripts/Stairs/CLAUDE.md`](Assets/Scripts/Stairs/CLAUDE.md#known-rough-edges). |
 | [`bigFixes1.md`](docs/bigFixes1.md) | §1 applied late, §4 superseded. Its §1 is still the reference for *why* `ForceSamePrefabs` plus a package `Editor/` prefab makes Editor↔device connection structurally impossible. |
 | [`bugFixes2.md`](docs/bugFixes2.md) | **Applied.** The four defects from the first two-headset session. Its §0 is the "flash both headsets from the same build" warning. |
 | [`quest_networking_plan.md`](docs/quest_networking_plan.md) | **Partly applied.** The Quest 3 → Quest 3S join failure. The cause is still unconfirmed — its last section is the measurement to take. |

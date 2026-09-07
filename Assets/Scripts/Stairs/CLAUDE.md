@@ -15,13 +15,18 @@ All of it compiles into **`MRBoardGame.Stairs`**, which references `MRBoardGame.
 else. Chasms and BASH are invisible from here and this is invisible from them — enforced by the
 compiler, not by convention.
 
-The whole of `stepsRules.md` is implemented, including both win conditions. What is *not* here: an
-undo, a move history, a clock, or any way to agree a draw.
+`stepsRules.md` is implemented, including both win conditions — **except its turn order, which was
+deliberately removed**: the two seats run independently and neither ever waits on the other. See
+[The turn](#the-turn) and [`bugFixesStairsGame.md`](../../../docs/bugFixesStairsGame.md) §1. What is
+*not* here: an undo, a move history, a clock, or any way to agree a draw.
 
 ### Where the state lives
 
 `StairsGame` is a `NetworkBehaviour` on the in-scene object **`World Root > Stairs Root`**, which
-also carries the `NetworkObject`, `StairsBoard` and `StairsView`. That is BASH's shape
+also carries the `NetworkObject`, `StairsBoard` and `StairsView`. `StairsSelection` is the exception:
+it sits alone on **`Stairs Controller`, a scene root** beside `World Root`, and needs nothing from the
+content frame — it reaches the other three through their `Instance` singletons and the rig by name,
+and every position it writes is local to a parent already inside the frame. That is BASH's shape
 (`Bash Root`), not Chasms' — Chasms puts `PlateauGame` on the persistent `Room Anchor.prefab`
 because its board has to survive being switched away from. Stairs owns nothing that needs to outlive
 its own scene, and a third game's state on the shared anchor makes every game pay for it.
@@ -37,14 +42,21 @@ same reason: `DefaultNetworkPrefabs.asset` is global by construction under `Forc
 difference in that *set* is a join that hangs on "Joining room…" with no reason string. 160 steps
 would also be 160 spawn messages. **Adding Stairs left that asset at four entries; keep it there.**
 
-Two `NetworkList`s and six `NetworkVariable`s, all server-written:
+Two `NetworkList`s and one `NetworkVariable`, all server-written:
 
 | | |
 | --- | --- |
 | `towers` | `NetworkList<StairsTower>`, 64 entries, indexed the way `StairsBoard` indexes cells |
-| `seats` | `NetworkList<StairsSeat>`, 2 entries — ring slot, pawn cell, supply, captured |
-| `phase` | `Setup` → `Move` → `Build` → `GameOver` |
-| `currentSeat`, `moveDirection`, `stepsMoved`, `stepsToPlace`, `winner` | the turn |
+| `seats` | `NetworkList<StairsSeat>`, 2 entries — ring slot, pawn cell, supply, captured, **and that seat's whole turn**: `phase`, `moveDirection`, `stepsMoved`, `stepsToPlace` |
+| `winner` | the winning seat, or `NoSeat` for "not over yet" *and* for a draw |
+
+**The turn state is on the seat, not on the game**, and that is the whole of "either player may act at
+any time". There is no `currentSeat` and no game-wide `phase` to fall out of step with the seats;
+`EndGame` writes `GameOver` into **both** seats, which is why `IsGameOver` can read seat 0 alone.
+Five `NetworkVariable`s were deleted to get here — `StairsGame.unity` still holds their serialized
+values until the scene is next saved. Read the turn through `PhaseOf(seat)`, `StepsToPlaceOf(seat)`
+and `MoveDirectionOf(seat)`; the old global `CurrentPhase` and `IsSeatToAct` are gone on purpose,
+because every one of `IsSeatToAct`'s call sites meant something slightly different.
 
 Every `ServerRpc` is `RequireOwnership = false` and starts by resolving the **sender's** seat from
 `ServerRpcParams` — never from a seat index in the message — and then **re-runs the same
@@ -78,8 +90,10 @@ which can run later than the connect callback.
 A seat is keyed to a ring slot, and **once taken it is never released** — not on disconnect, not on
 a `New Game`. `PlayerRing.PickFreeSlot` hands a reconnecting player the slot they vacated, so a
 player who drops out walks back into their own half-finished game. The deliberate cost is that a
-third person in the room spectates even while a seat's player is away; the game simply waits on
-their turn, and their console says so.
+third person in the room spectates even while a seat's player is away. Since the turn state moved
+onto the seat the *other* player is no longer blocked by this — they keep moving and building — but
+the absent seat's board is frozen where they left it and their console still says what they were
+mid-way through.
 
 `PreferredSeat` maps a ring slot to the board edge it is standing at — seat 0's console is on the
 board's **−Z** edge and seat 1's on **+Z**. `PickFreeSlot` gives the first two players slots 0 and 6,
@@ -89,18 +103,36 @@ free seat.
 
 ### The turn
 
-| Phase | Who acts | What ends it |
-| --- | --- | --- |
-| `Setup` | either seated player whose pawn is not down | both pawns placed → `Move`, seat 0 first |
-| `Move` | `currentSeat` | the **End Turn** key → `Build`, or a capture → the opponent's `Move` |
-| `Build` | `currentSeat` | the last owed tile placed → the opponent's `Move` |
-| `GameOver` | nobody | `New Game` |
+Each seat walks this cycle **at its own pace**, and the two never interact. There is no such thing as
+"whose turn it is".
+
+| That seat's phase | What ends it |
+| --- | --- |
+| `Setup` | that player drops their pawn → straight into their own `Move` |
+| `Move` | the **End Turn** key → their `Build`, or a capture → their own next `Move` |
+| `Build` | the last owed tile placed, or nowhere legal left to build → their own next `Move` |
+| `GameOver` | `New Game`. Written into **both** seats at once |
+
+Deliberate departures from `stepsRules.md`, decided in `bugFixesStairsGame.md` §1 and §9 — these are
+choices, not readings, and the rules doc carries a note saying so:
+
+- **There is no turn order.** Either player may move, end their move, build or place their pawn at
+  any moment, including while the other is mid-turn. A quick player can take three turns while the
+  other thinks.
+- **A capture no longer hands the board over.** It ends the capturing player's turn, which now means
+  their *own* next `Move` starts at once, with fresh momentum and no build.
+- **Setup has no order** and does not have to be finished by both players before either can play.
+  Seat 0 can be four turns in before seat 1 puts a pawn down; on a bare board the opening is pure
+  building anyway.
+- **A solo player can play the whole game.** Before this, one player alone placed their pawn and the
+  board went permanently inert — nothing left `Setup` until *both* pawns were down.
+
+Everything else is enforced exactly as before, per seat, by the same `StairsMoveRules` calls. The two
+new races are both safe by construction: the server re-runs the rule for every request and the client
+predicts nothing, so the loser of a same-tick build simply keeps their tile and still owes it.
 
 Readings taken where `stepsRules.md` is ambiguous:
 
-- **Setup order is only enforced when seat 0 is occupied.** The rules have Player 1 place first, but
-  with one player in the room who happens to hold seat 1, waiting for seat 0 would wedge the game
-  before it started. `CanPlacePawn` is the one place that decides.
 - **A capture is exactly one level down.** The rules say "from an adjacent space that is at least one
   level higher", which under an exact-one-level movement rule can only ever be exactly one higher, so
   the two collapse into the same test.
@@ -117,8 +149,8 @@ Readings taken where `stepsRules.md` is ambiguous:
   effectively unreachable on a 64-cell board — which is exactly how a room ends up waiting for ever
   on a placement that can never be made.
 
-`winner` is `StairsConst.NoSeat` both before the game ends *and* for a draw. **`phase` is what
-disambiguates**: `NoSeat` with `GameOver` is the supply-exhaustion tie.
+`winner` is `StairsConst.NoSeat` both before the game ends *and* for a draw. **`IsGameOver` is what
+disambiguates**: `NoSeat` with both seats in `GameOver` is the supply-exhaustion tie.
 
 ## The board grid — derived, not authored
 
@@ -140,10 +172,12 @@ differently, and the two must not be assumed to match.
   somebody yaws the board.
 - Step thickness is **measured from `Step1.prefab`** (`localScale.y` × the mesh height, 0.03), not
   written down. The prefab is the thing somebody will edit.
-- Bare squares are targeted by mapping the point where the ray met **`Board`'s collider** back onto
-  the lattice. The cells carry no tag and no collider of their own, so `Bake` logs loudly if that
-  collider goes missing — every cell with something stacked on it would still work, which is what
-  makes it easy to miss.
+- Bare squares are targeted by **where the ray landed, not by what it hit**: `ResolveHit` looks for a
+  `StairsPieceTag` on the hit collider's parents and, finding none, maps the hit *point* onto the
+  lattice. The 64 cells do each carry a `BoxCollider` — they are untagged scenery and are never
+  resolved off the hit itself — so what **`Board`'s collider** actually catches is the 1 cm gaps
+  between them and anything overhanging the edge. `Bake` logs an error if it goes missing; the
+  wording there overstates the damage, since a ray landing squarely on a bare cell still resolves.
 - Rounding to the nearest lattice point rather than testing each cell's footprint snaps the 1 cm gaps
   between cells to the nearer of the two, so a drag never dies in the cracks.
 
@@ -182,13 +216,26 @@ because it is part of the board.
 
 ## Interaction — `StairsSelection`
 
-Two idioms, and which applies is decided by the **phase**, not by the button, so they can never be
-ambiguous:
+Two idioms, and which applies is decided by the **piece's role**, not by the button, so they can never
+be ambiguous:
 
 | | Where | How |
 | --- | --- | --- |
-| **Drag** | a piece not on the board yet — your pawn in `Setup`, a supply step in `Build` | hover (it lights up) → hold the right trigger → a ghost follows the pointer, snapping to the middle of whichever cell the beam is on → release over a legal cell |
+| **Drag** | your pawn in `Setup`, a supply step in `Build`, and **a tile you have already laid, at any time** | hover (it lights up) → hold the right trigger → a ghost follows the pointer, snapping to the middle of whichever cell the beam is on → release over a legal cell |
 | **Click** | your pawn once it is on the board, and the End Turn key | trigger **down and up on the same thing**, so sliding off cancels — the same contract every key in the project has |
+
+**Re-laying a placed tile** (`IsLegalStepLift` + `RequestMoveStepServerRpc`) is the one affordance
+that is not in `stepsRules.md` — it exists to fix a misplacement, and it is deliberately narrow: your
+own tiles only, the **top** of the stack only, never one with a pawn standing on it, and it costs
+nothing (no supply spent or returned, no tile owed, no phase gate). Where it may land is plain
+`IsLegalBuild`, so a re-laid tile can never end up on the opponent's tower and "a tower has exactly
+one owner" still holds. `CanDrag` also refuses while a pawn is selected, so the two idioms cannot
+fight over the same trigger press.
+
+> The rule lives in `StairsMoveRules` and not in `StairsGame` for the reason that file's header
+> gives: one implementation, so the client's highlight and the server's answer cannot disagree.
+> `StairsGame.CanLiftStep` is the client's cheap "may I?", and it fills its **own** scratch `askView`
+> rather than touching `serverView`.
 
 Clicking your own pawn selects it and lights its legal moves; clicking one of those takes it, and the
 pawn **stays selected**, because a turn is usually several steps and the momentum rule makes the next
@@ -239,34 +286,48 @@ the **top step of a tower** rather than the cell under it, which would be invisi
 The number on top of a tower is not in `stepsRules.md` — a stack of identical tiles is unreadable at
 a glance across a real table.
 
-**The label is not a child of the step it sits on.** `Step1`/`Step2` are scaled `(0.2, 0.03, 0.2)`,
-and Unity *shears* a rotated child of a non-uniformly scaled parent — so a number that turns to face
-each player would squash and skew as it turned. Each one is cloned from the prefab's authored
-`Height` child into **`Stairs Root > Labels`**, which is at identity, and the authored copy is
-switched off on every instantiated step. The clone keeps the font, size and colour where an author
-can see them; only its rotation is driven from code. The same rule is why the End Turn key's label is
-a **sibling** of the slab rather than its child.
+**The number is the tile's own authored `Height` child**, switched on and set once when the tile is
+built, to that tile's **1-based level in its tower** — so the top of a stack always reads as the
+stack's height and every tile below it is buried inside the one above. A separate `Labels` root with
+one clone per cell used to do this; it is gone, along with `labelTemplate`, `labelColors` and
+`UpdateTowerLabel`.
 
-`LateUpdate` lays each number flat and yaws it so the **local** player reads it the right way up:
-two players stand on opposite sides of the board, so a fixed orientation is upside down for one of
+Set-once is enough, and this is the part worth knowing: a tower's steps are only ever appended to or
+removed from the **end**, and an owner change clears the whole list and rebuilds it, so a tile's
+index never changes underneath it. Re-laying a tile destroys the source tower's top step and builds a
+new one on the destination; a capture empties a tower outright. No path leaves a stale number.
+
+> The old reason for cloning was that Unity **shears** a rotated child of a non-uniformly scaled
+> parent. It does not apply here: `Step1`/`Step2` are `(0.2, 0.03, 0.2)`, X and Z are *equal*, and the
+> label lies in the XZ plane — so any yaw about Y maps its two in-plane axes onto two equally scaled
+> ones. **The moment those two scales differ, the shear is back** and the label has to stop turning or
+> move off the tile again. (The End Turn key's label is still a *sibling* of its slab for exactly this
+> reason: the slab is `(0.34, 0.02, 0.16)`.)
+
+`StairsView.LateUpdate` keeps only the **top** tile's label per cell (`towerTopLabel`, refreshed at
+the end of `ReconcileTower`) and yaws it so the **local** player reads it the right way up: two
+players stand on opposite sides of a real table, so a fixed orientation is upside down for one of
 them. Local and deliberately not networked, like the passthrough toggle and Chasms' billboarded
 counts.
 
-> `Height` was authored at local `(9.59, 0.61, −2.0)` on both prefabs — 1.9 m off the step under its
-> 0.2 scale — and facing downward at `+90°` about X. Both are fixed in the prefabs; `−90°` is what
-> points a transform's forward at the ceiling, and `+90°` puts the text face-down under the tile.
+**TMP is read from its −Z side** — the reader looks *along* the text's own forward, which is why the
+standard billboard is `forward = camera.forward` and why `LookAt(camera)` famously mirrors text. A
+label lying flat therefore wants its forward pointing at the **floor**. That is `Euler(90, 0, 0)`
+(both step prefabs, and the End Turn key), and `LookRotation(-up, away)` in billboard form. `-90` and
+`LookRotation(up, away)` are the mirrored versions of the same thing. See
+[`bugFixesStairsGame.md`](../../../docs/bugFixesStairsGame.md) §2.
 
 ## Load-bearing names
 
 Resolved at runtime by exact string. Renaming any of these compiles fine and fails in the headset —
-see [Conventions that break silently](../../CLAUDE.md#conventions-that-break-silently) for the
+see [Conventions that break silently](../../../CLAUDE.md#conventions-that-break-silently) for the
 project-wide list.
 
 `Stairs Root` · `Cells` · `Board` · `Height` (the TMP child on both step prefabs)
 
 `StairsView` builds and then re-finds nothing by name, so the objects it creates — `Pieces`,
-`Labels`, `Console 0`/`1`, `Supply`, `Captured`, `Home`, `Status`, `End Turn` — are for reading the
-Hierarchy, not contracts.
+`Console 0`/`1`, `Supply`, `Captured`, `Home`, `Status`, `End Turn`, `Slab`, `Label` — are for
+reading the Hierarchy, not contracts.
 
 ## Known rough edges
 
@@ -277,6 +338,16 @@ Hierarchy, not contracts.
   `StairsSelection` stands down entirely — but nobody has had a third player in the room.
 - **A seat is never released**, so a room whose two players both leave cannot be played by anybody
   else without a `New Game`, and even that keeps the seating. Deliberate; see Seats above.
-- There is no turn timer and no way to concede, so a game waits indefinitely for a player who has
-  gone.
+- There is no way to concede. Nobody waits on anybody any more, so a game no longer *stalls* when a
+  player leaves — but neither win condition can be reached against an empty seat either, so it just
+  never ends.
 - `CapturedVisualCap` means a capture of a tower taller than 20 shows fewer tiles than the count says.
+- **Tower numbers render mirrored.** `StairsView.LateUpdate` still billboards with
+  `LookRotation(up, away)` where the rule above says `-up`. The prefabs and the End Turn key were
+  fixed; this one line was not. One-line fix, `StairsView.cs:711`.
+- **A tile being re-laid is drawn twice** — once in hand as the ghost, once still sitting on its
+  tower, because the local hide (`StairsView.SetLiftedCell`, `bugFixesStairsGame.md` §3.3) was never
+  built. Harmless but confusing, and it also means the ghost sits one level too high over its own
+  source square.
+- **The tiles a player owes are not lifted out of their supply** — `bugFixesStairsGame.md` §6 is
+  designed but unbuilt. The count is in the status line and nowhere else.

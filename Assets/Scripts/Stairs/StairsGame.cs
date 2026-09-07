@@ -39,28 +39,9 @@ public class StairsGame : NetworkBehaviour, IGameSession
     /// <summary>The two playing seats. Indexed by seat, NOT by ring slot — see StairsSeat.</summary>
     public NetworkList<StairsSeat> seats;
 
-    public NetworkVariable<int> phase = new NetworkVariable<int>(
-        (int)StairsPhase.Setup, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Server);
-
-    /// <summary>Whose turn it is. Meaningless during Setup, where either seated player may place.</summary>
-    public NetworkVariable<int> currentSeat = new NetworkVariable<int>(
-        0, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Server);
-
-    /// <summary>stepsRules.md "Momentum Rule": StairsMoveRules.DirectionFree until the first step of
-    /// the turn, then locked to whichever way it went.</summary>
-    public NetworkVariable<int> moveDirection = new NetworkVariable<int>(
-        StairsMoveRules.DirectionFree, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Server);
-
-    /// <summary>Spaces moved this turn. Becomes the number of tiles to build with.</summary>
-    public NetworkVariable<int> stepsMoved = new NetworkVariable<int>(
-        0, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Server);
-
-    /// <summary>Tiles still owed in the Build phase. Reaching 0 passes the turn.</summary>
-    public NetworkVariable<int> stepsToPlace = new NetworkVariable<int>(
-        0, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Server);
-
-    /// <summary>The winning seat once <see cref="phase"/> is GameOver. StairsConst.NoSeat means
-    /// "no winner yet" before GameOver and **a draw** after it — the phase is what disambiguates.</summary>
+    /// <summary>The winning seat once the game is over. StairsConst.NoSeat means "no winner yet"
+    /// before then and **a draw** after it — <see cref="IsGameOver"/> is what disambiguates, since
+    /// there is no game-wide phase left to ask. See bugFixesStairsGame.md §1.</summary>
     public NetworkVariable<int> winner = new NetworkVariable<int>(
         StairsConst.NoSeat, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Server);
 
@@ -121,11 +102,6 @@ public class StairsGame : NetworkBehaviour, IGameSession
 
         towers.OnListChanged += HandleTowersChanged;
         seats.OnListChanged += HandleSeatsChanged;
-        phase.OnValueChanged += HandleIntChanged;
-        currentSeat.OnValueChanged += HandleIntChanged;
-        moveDirection.OnValueChanged += HandleIntChanged;
-        stepsMoved.OnValueChanged += HandleIntChanged;
-        stepsToPlace.OnValueChanged += HandleIntChanged;
         winner.OnValueChanged += HandleIntChanged;
 
         // The values a client arrives already holding raise no change event, so say so by hand.
@@ -136,11 +112,6 @@ public class StairsGame : NetworkBehaviour, IGameSession
     {
         towers.OnListChanged -= HandleTowersChanged;
         seats.OnListChanged -= HandleSeatsChanged;
-        phase.OnValueChanged -= HandleIntChanged;
-        currentSeat.OnValueChanged -= HandleIntChanged;
-        moveDirection.OnValueChanged -= HandleIntChanged;
-        stepsMoved.OnValueChanged -= HandleIntChanged;
-        stepsToPlace.OnValueChanged -= HandleIntChanged;
         winner.OnValueChanged -= HandleIntChanged;
     }
 
@@ -249,8 +220,19 @@ public class StairsGame : NetworkBehaviour, IGameSession
 
     // ------------------------------------------------------------------ reading the state
 
-    public StairsPhase CurrentPhase => (StairsPhase)phase.Value;
-    public bool IsPlaying => seats.Count >= StairsConst.Seats && CurrentPhase != StairsPhase.GameOver;
+    /// <summary>This seat's own turn state. There is no game-wide phase any more — see
+    /// bugFixesStairsGame.md §1. Safe before the first sync: an unsynced seat reads Setup.</summary>
+    public StairsPhase PhaseOf(int seat) => SeatState(seat).Phase;
+
+    /// <summary>Tiles this seat still owes in its own Build phase.</summary>
+    public int StepsToPlaceOf(int seat) => SeatState(seat).stepsToPlace;
+
+    /// <summary>This seat's momentum for its current turn, for StairsMoveRules.</summary>
+    public int MoveDirectionOf(int seat) => SeatState(seat).moveDirection;
+
+    /// <summary>Somebody won or the supply ran out. EndGame writes GameOver into both seats, so this
+    /// is one fact rather than two that can disagree.</summary>
+    public bool IsGameOver => SeatState(0).Phase == StairsPhase.GameOver;
 
     /// <summary>Safe before the first sync, when the lists are still empty.</summary>
     public StairsSeat SeatState(int seat)
@@ -316,54 +298,36 @@ public class StairsGame : NetworkBehaviour, IGameSession
         }
     }
 
-    /// <summary>
-    /// Whether this seat is the one that has to act right now. Setup is the exception: it has no
-    /// turn order to speak of, only "your pawn is not down yet".
-    /// </summary>
-    public bool IsSeatToAct(int seat)
+    // Client-side scratch for the one question StairsSelection has to ask outside its per-frame
+    // refresh. Server validation uses serverView and never this.
+    StairsMoveRules.View askView;
+
+    /// <summary>Whether this seat may pick the top tile off this cell right now. Same rule the server
+    /// re-runs in RequestMoveStepServerRpc.</summary>
+    public bool CanLiftStep(int seat, int cell)
     {
-        if (!StairsConst.IsSeat(seat) || !SeatState(seat).IsOccupied)
+        if (IsGameOver)
         {
             return false;
         }
-
-        switch (CurrentPhase)
-        {
-            case StairsPhase.Setup:
-                return CanPlacePawn(seat);
-            case StairsPhase.Move:
-            case StairsPhase.Build:
-                return currentSeat.Value == seat;
-            default:
-                return false;
-        }
+        FillView(ref askView);
+        return StairsMoveRules.IsLegalStepLift(askView, seat, cell);
     }
 
     /// <summary>
-    /// stepsRules.md has Player 1 place first and Player 2 second. That order is only enforced while
-    /// seat 0 is actually occupied: with one player in the room who happens to hold seat 1, waiting
-    /// for seat 0 would wedge the game before it started.
+    /// stepsRules.md has Player 1 place first and Player 2 second. That order is no longer enforced at
+    /// all: either player may put their pawn down whenever they like, and doing so starts that player's
+    /// own first Move without waiting for the other pawn. bugFixesStairsGame.md §1.
     /// </summary>
     public bool CanPlacePawn(int seat)
     {
-        if (CurrentPhase != StairsPhase.Setup || !StairsConst.IsSeat(seat))
+        if (!StairsConst.IsSeat(seat))
         {
             return false;
         }
 
         StairsSeat state = SeatState(seat);
-        if (!state.IsOccupied || state.HasPawnOnBoard)
-        {
-            return false;
-        }
-
-        if (seat == 0)
-        {
-            return true;
-        }
-
-        StairsSeat first = SeatState(0);
-        return !first.IsOccupied || first.HasPawnOnBoard;
+        return state.IsOccupied && !state.HasPawnOnBoard && state.Phase == StairsPhase.Setup;
     }
 
     // ------------------------------------------------------------------ the requests
@@ -387,69 +351,67 @@ public class StairsGame : NetworkBehaviour, IGameSession
         state.pawnCell = cell;
         seats[seat] = state;
 
-        // Both pawns down and both seats filled: the game proper starts, seat 0 to move.
-        if (SeatState(0).HasPawnOnBoard && SeatState(1).HasPawnOnBoard &&
-            SeatState(0).IsOccupied && SeatState(1).IsOccupied)
-        {
-            BeginTurn(0);
-        }
+        // This seat starts its own first Move at once. The other seat is not touched and may still be
+        // in Setup, mid-Move or mid-Build; the two never wait on each other.
+        BeginTurn(seat);
     }
 
     [ServerRpc(RequireOwnership = false)]
     public void RequestMoveServerRpc(int cell, ServerRpcParams p = default)
     {
         int seat = SeatForSender(p);
-        if (!StairsConst.IsSeat(seat) || CurrentPhase != StairsPhase.Move || currentSeat.Value != seat)
+        if (!StairsConst.IsSeat(seat))
+        {
+            return;
+        }
+
+        StairsSeat state = seats[seat];
+        if (state.Phase != StairsPhase.Move)
         {
             return;
         }
 
         FillView(ref serverView);
-        if (!StairsMoveRules.IsLegalMove(serverView, seat, cell, moveDirection.Value, out bool capture))
+        if (!StairsMoveRules.IsLegalMove(serverView, seat, cell, state.moveDirection, out bool capture))
         {
             return;
         }
 
-        int from = SeatState(seat).pawnCell;
+        int from = state.pawnCell;
         int direction = StairsMoveRules.DirectionOf(serverView, from, cell);
 
-        StairsSeat state = seats[seat];
         state.pawnCell = cell;
+        state.stepsMoved = (byte)Mathf.Min(byte.MaxValue, state.stepsMoved + 1);
 
         if (capture)
         {
-            // "Take the captured tiles off the board and place them in front of you to keep score."
-            // The whole tower comes off, so the pawn lands on the bare cell it just cleared.
             int taken = towers[cell].height;
             SetTower(cell, StairsConst.NoSeat, 0);
             state.captured = (byte)Mathf.Min(byte.MaxValue, state.captured + taken);
             seats[seat] = state;
 
-            stepsMoved.Value = stepsMoved.Value + 1;
-
-            // "Your turn ends immediately after completing a capture" — and a capturing turn does
-            // not build, because stepsRules.md's build clause is "if you do not capture".
+            // "Your turn ends immediately after completing a capture", and a capturing turn does not
+            // build. Under §1 that means this player's OWN next Move, not the opponent's.
             if (!CheckForWinner())
             {
-                BeginTurn(StairsConst.Opponent(seat));
+                BeginTurn(seat);
             }
             return;
         }
 
-        seats[seat] = state;
-        stepsMoved.Value = stepsMoved.Value + 1;
-
-        if (moveDirection.Value == StairsMoveRules.DirectionFree)
+        if (state.moveDirection == StairsMoveRules.DirectionFree)
         {
-            moveDirection.Value = direction;
+            state.moveDirection = (sbyte)direction;
         }
+
+        seats[seat] = state;
     }
 
     [ServerRpc(RequireOwnership = false)]
     public void RequestEndMoveServerRpc(ServerRpcParams p = default)
     {
         int seat = SeatForSender(p);
-        if (!StairsConst.IsSeat(seat) || CurrentPhase != StairsPhase.Move || currentSeat.Value != seat)
+        if (!StairsConst.IsSeat(seat) || PhaseOf(seat) != StairsPhase.Move)
         {
             return;
         }
@@ -461,8 +423,13 @@ public class StairsGame : NetworkBehaviour, IGameSession
     public void RequestPlaceStepServerRpc(int cell, ServerRpcParams p = default)
     {
         int seat = SeatForSender(p);
-        if (!StairsConst.IsSeat(seat) || CurrentPhase != StairsPhase.Build ||
-            currentSeat.Value != seat || stepsToPlace.Value <= 0)
+        if (!StairsConst.IsSeat(seat))
+        {
+            return;
+        }
+
+        StairsSeat state = seats[seat];
+        if (state.Phase != StairsPhase.Build || state.stepsToPlace == 0)
         {
             return;
         }
@@ -475,11 +442,9 @@ public class StairsGame : NetworkBehaviour, IGameSession
 
         SetTower(cell, seat, towers[cell].height + 1);
 
-        StairsSeat state = seats[seat];
         state.supply = (byte)Mathf.Max(0, state.supply - 1);
+        state.stepsToPlace = (byte)(state.stepsToPlace - 1);
         seats[seat] = state;
-
-        stepsToPlace.Value = stepsToPlace.Value - 1;
 
         if (state.supply == 0)
         {
@@ -487,19 +452,43 @@ public class StairsGame : NetworkBehaviour, IGameSession
             return;
         }
 
-        if (stepsToPlace.Value <= 0)
+        if (state.stepsToPlace == 0)
         {
-            BeginTurn(StairsConst.Opponent(seat));
+            BeginTurn(seat);
             return;
         }
 
-        // Still owed tiles, but possibly nowhere left to put them. Ending the turn beats leaving the
-        // room waiting on a placement that can never be made.
+        // Still owed tiles, but possibly nowhere left to put them.
         FillView(ref serverView);
         if (!StairsMoveRules.AnyLegalBuild(serverView, seat))
         {
-            BeginTurn(StairsConst.Opponent(seat));
+            BeginTurn(seat);
         }
+    }
+
+    /// <summary>
+    /// Move a tile this player has already placed. Deliberately not tied to a phase: a misplacement is
+    /// worth fixing whenever it is noticed, and it costs nothing — no supply is spent or returned and
+    /// no tile is owed, because the tile was already on the board. bugFixesStairsGame.md §3.
+    /// </summary>
+    [ServerRpc(RequireOwnership = false)]
+    public void RequestMoveStepServerRpc(int fromCell, int toCell, ServerRpcParams p = default)
+    {
+        int seat = SeatForSender(p);
+        if (!StairsConst.IsSeat(seat) || IsGameOver || fromCell == toCell)
+        {
+            return;
+        }
+
+        FillView(ref serverView);
+        if (!StairsMoveRules.IsLegalStepLift(serverView, seat, fromCell) ||
+            !StairsMoveRules.IsLegalBuild(serverView, seat, toCell))
+        {
+            return;
+        }
+
+        SetTower(fromCell, seat, towers[fromCell].height - 1);
+        SetTower(toCell, seat, towers[toCell].height + 1);
     }
 
     /// <summary>
@@ -522,18 +511,20 @@ public class StairsGame : NetworkBehaviour, IGameSession
         towers[cell] = new StairsTower(owner, height);
     }
 
+    /// <summary>Start this seat's own next turn. Nothing about the other seat changes.</summary>
     void BeginTurn(int seat)
     {
-        currentSeat.Value = seat;
-        phase.Value = (int)StairsPhase.Move;
-        moveDirection.Value = StairsMoveRules.DirectionFree;
-        stepsMoved.Value = 0;
-        stepsToPlace.Value = 0;
+        StairsSeat state = seats[seat];
+        state.phase = (byte)StairsPhase.Move;
+        state.moveDirection = (sbyte)StairsMoveRules.DirectionFree;
+        state.stepsMoved = 0;
+        state.stepsToPlace = 0;
+        seats[seat] = state;
     }
 
     void BeginBuild(int seat)
     {
-        StairsSeat state = SeatState(seat);
+        StairsSeat state = seats[seat];
 
         if (state.supply == 0)
         {
@@ -544,15 +535,33 @@ public class StairsGame : NetworkBehaviour, IGameSession
         FillView(ref serverView);
         if (!StairsMoveRules.AnyLegalBuild(serverView, seat))
         {
-            BeginTurn(StairsConst.Opponent(seat));
+            BeginTurn(seat);
             return;
         }
 
-        // "The number of tiles you place is equal to the number of spaces you moved", and the
-        // Minimum Rule: at least one even after a turn that moved nowhere.
-        int owed = Mathf.Max(1, stepsMoved.Value);
-        stepsToPlace.Value = Mathf.Min(owed, state.supply);
-        phase.Value = (int)StairsPhase.Build;
+        // "The number of tiles you place is equal to the number of spaces you moved", and the Minimum
+        // Rule: at least one even after a turn that moved nowhere.
+        int owed = Mathf.Max(1, state.stepsMoved);
+        state.stepsToPlace = (byte)Mathf.Min(owed, state.supply);
+        state.phase = (byte)StairsPhase.Build;
+        seats[seat] = state;
+    }
+
+    /// <summary>
+    /// Stop the game and record who won. GameOver goes into BOTH seats rather than into a flag beside
+    /// them: a seat's phase is the only turn state there is now, and two things that have to agree are
+    /// two things that can disagree.
+    /// </summary>
+    void EndGame(int winnerSeat)
+    {
+        winner.Value = winnerSeat;
+
+        for (int s = 0; s < StairsConst.Seats; s++)
+        {
+            StairsSeat state = seats[s];
+            state.phase = (byte)StairsPhase.GameOver;
+            seats[s] = state;
+        }
     }
 
     bool CheckForWinner()
@@ -561,25 +570,18 @@ public class StairsGame : NetworkBehaviour, IGameSession
         {
             if (SeatState(s).captured >= StairsConst.CapturesToWin)
             {
-                winner.Value = s;
-                phase.Value = (int)StairsPhase.GameOver;
+                EndGame(s);
                 return true;
             }
         }
         return false;
     }
 
-    /// <summary>
-    /// stepsRules.md "Supply Exhaustion Win": the game ends and the most captures wins. A tie leaves
-    /// <see cref="winner"/> at NoSeat, which with the phase at GameOver reads as a draw.
-    /// </summary>
     void EndOnSupplyExhausted()
     {
         int a = SeatState(0).captured;
         int b = SeatState(1).captured;
-
-        winner.Value = a > b ? 0 : b > a ? 1 : StairsConst.NoSeat;
-        phase.Value = (int)StairsPhase.GameOver;
+        EndGame(a > b ? 0 : b > a ? 1 : StairsConst.NoSeat);
     }
 
     void ResetGame()
@@ -607,11 +609,6 @@ public class StairsGame : NetworkBehaviour, IGameSession
             seats.Add(fresh);
         }
 
-        phase.Value = (int)StairsPhase.Setup;
-        currentSeat.Value = 0;
-        moveDirection.Value = StairsMoveRules.DirectionFree;
-        stepsMoved.Value = 0;
-        stepsToPlace.Value = 0;
         winner.Value = StairsConst.NoSeat;
     }
 
