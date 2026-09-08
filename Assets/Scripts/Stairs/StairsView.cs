@@ -64,6 +64,15 @@ public class StairsView : MonoBehaviour
     /// sitting ON the tower, not floating over it.</summary>
     const float LabelLift = 0.004f;
 
+    /// <summary>How far the tiles a player still owes float clear of their supply stack, in step
+    /// thicknesses. One tile is a visible gap without reading as a second stack.</summary>
+    const float OwedLiftInSteps = 1f;
+
+    /// <summary>Supply tiles per stack — 4 x 10 at StepsPerPlayer 40. The last stack takes the
+    /// remainder when the two do not divide evenly.</summary>
+    static readonly int SupplyPerStack =
+        Mathf.Max(1, Mathf.CeilToInt(StairsConst.StepsPerPlayer / (float)StairsConst.SupplyStacks));
+
     /// <summary>How many captured tiles are actually drawn. The count in the status line is the
     /// truth; a capture of a very tall tower would otherwise build a pillar taller than the board.</summary>
     const int CapturedVisualCap = 20;
@@ -84,6 +93,13 @@ public class StairsView : MonoBehaviour
     readonly List<GameObject>[] towerSteps = new List<GameObject>[StairsConst.CellCount];
     readonly TMP_Text[] towerTopLabel = new TMP_Text[StairsConst.CellCount];
     readonly int[] towerOwnerShown = new int[StairsConst.CellCount];
+
+    /// <summary>
+    /// The cell whose top tile is currently in this player's hand, or NoCell. Local and per-client:
+    /// as far as the server is concerned that tile is still on the board and the drag may be
+    /// abandoned, so this only ever switches an object off — it never changes state.
+    /// </summary>
+    int liftedCell = StairsConst.NoCell;
 
     readonly List<GameObject>[] supplySteps = new List<GameObject>[StairsConst.Seats];
     readonly List<GameObject>[] capturedSteps = new List<GameObject>[StairsConst.Seats];
@@ -379,14 +395,11 @@ public class StairsView : MonoBehaviour
             steps.Add(step);
         }
 
-        // Only the top tile's number is ever visible, so only that one is worth turning each frame.
-        towerTopLabel[cell] = null;
-        if (steps.Count > 0)
-        {
-            Transform authored = HierarchyUtils.FindDescendant(steps[steps.Count - 1].transform,
-                                                               StairsConst.StepLabelName);
-            towerTopLabel[cell] = authored != null ? authored.GetComponent<TMP_Text>() : null;
-        }
+        // A rebuild can land mid-drag — the opponent building anywhere marks the whole board dirty —
+        // so re-hide the tile in hand before caching the label, or it comes back under the player's
+        // hand and the number one below it stops being the one that gets turned.
+        ApplyLifted(cell);
+        RefreshTopLabel(cell);
     }
 
     void ReconcilePawn(int seat)
@@ -449,15 +462,14 @@ public class StairsView : MonoBehaviour
     void ReconcileSupply(int seat)
     {
         List<GameObject> steps = supplySteps[seat];
-        int want = game.SeatState(seat).IsOccupied ? game.SeatState(seat).supply : 0;
+        StairsSeat state = game.SeatState(seat);
+        int want = state.IsOccupied ? state.supply : 0;
 
         while (steps.Count > want)
         {
             Destroy(steps[steps.Count - 1]);
             steps.RemoveAt(steps.Count - 1);
         }
-
-        int perStack = Mathf.Max(1, Mathf.CeilToInt(StairsConst.StepsPerPlayer / (float)StairsConst.SupplyStacks));
 
         while (steps.Count < want)
         {
@@ -467,18 +479,36 @@ public class StairsView : MonoBehaviour
             {
                 break;
             }
-
-            int index = steps.Count;
-            int stack = Mathf.Min(index / perStack, StairsConst.SupplyStacks - 1);
-            int level = index - stack * perStack;
-
-            step.transform.localPosition = new Vector3(
-                SupplyFirstX + stack * SupplyStackPitch,
-                (level + 0.5f) * stepThickness,
-                0f);
-
             steps.Add(step);
         }
+
+        // The tiles this player owes, floating clear of the stack: how many they have to place is
+        // then readable across the table without reading the status line, and it shrinks as they go.
+        //
+        // A position and not a tint, deliberately. StairsSelection (order 25) clears every highlight
+        // it applied at the top of its own Update, which runs after this (20) — so a tint set here
+        // would be wiped the first frame the pointer hovered a supply tile and never come back.
+        // Nothing contests a position.
+        int owed = state.Phase == StairsPhase.Build ? state.stepsToPlace : 0;
+        for (int i = 0; i < steps.Count; i++)
+        {
+            steps[i].transform.localPosition = SupplyStepPosition(i, i >= steps.Count - owed);
+        }
+    }
+
+    /// <summary>
+    /// Console-local position of the nth tile in a player's supply, counting from 0 at the bottom of
+    /// the leftmost stack. Owed tiles float clear of the rest — bugFixesStairsGame.md §6.
+    /// </summary>
+    Vector3 SupplyStepPosition(int index, bool owed)
+    {
+        int stack = Mathf.Min(index / SupplyPerStack, StairsConst.SupplyStacks - 1);
+        int level = index - stack * SupplyPerStack;
+
+        return new Vector3(
+            SupplyFirstX + stack * SupplyStackPitch,
+            (level + 0.5f) * stepThickness + (owed ? OwedLiftInSteps * stepThickness : 0f),
+            0f);
     }
 
     void ReconcileCaptured(int seat)
@@ -706,9 +736,12 @@ public class StairsView : MonoBehaviour
                 continue;                   // looking straight down the pillar: leave it as it is
             }
 
-            // Forward along the board's up so the text faces the ceiling, and text-up pointing away
-            // from the reader, which is what makes a number on a table read correctly.
-            label.transform.rotation = Quaternion.LookRotation(up, away.normalized);
+            // Forward at the FLOOR, text-up pointing away from the reader. TMP lays its glyphs on
+            // the local XY plane facing +Z and is read from the -Z side — the reader looks *along*
+            // the text's own forward, which is why the standard billboard is forward = camera
+            // forward and why LookAt(camera) mirrors text. LookRotation(up, ...) is that mirror;
+            // -up is the same rule as the +90 about X on the step prefabs and the End Turn key.
+            label.transform.rotation = Quaternion.LookRotation(-up, away.normalized);
         }
     }
 
@@ -741,18 +774,24 @@ public class StairsView : MonoBehaviour
     }
 
     /// <summary>
-    /// What to light up for a cell: the top step of whatever stands on it, or the cell itself when
-    /// it is bare. Highlighting the cell under a tower would be invisible.
+    /// What to light up for a cell: the topmost visible step of whatever stands on it, or the cell
+    /// itself when it is bare. Highlighting the cell under a tower would be invisible, and so would
+    /// highlighting the tile currently in somebody's hand — hence "visible" rather than "top".
     /// </summary>
     public StairsTint HighlightTarget(int cell)
     {
         List<GameObject> steps = StairsConst.IsCell(cell) ? towerSteps[cell] : null;
-        if (steps != null && steps.Count > 0)
+        if (steps != null)
         {
-            GameObject top = steps[steps.Count - 1];
-            if (top != null)
+            for (int i = steps.Count - 1; i >= 0; i--)
             {
-                StairsTint tint = top.GetComponent<StairsTint>();
+                GameObject step = steps[i];
+                if (step == null || !step.activeSelf)
+                {
+                    continue;
+                }
+
+                StairsTint tint = step.GetComponent<StairsTint>();
                 if (tint != null)
                 {
                     return tint;
@@ -761,6 +800,86 @@ public class StairsView : MonoBehaviour
         }
 
         return board != null ? board.CellTint(cell) : null;
+    }
+
+    /// <summary>
+    /// Take the top tile of <paramref name="cell"/> off the board because this player has it in hand,
+    /// or NoCell to put the last one back. Purely local — the tile is still on the board as far as
+    /// the server is concerned, and the drag may be abandoned. bugFixesStairsGame.md §3.3.
+    ///
+    /// Without this the player sees the tile they are dragging *and* the tile still sitting on the
+    /// tower. Hiding the top one also exposes the number underneath, which is the height the tower
+    /// would have if the tile were laid somewhere else — which is the right thing to be looking at.
+    /// </summary>
+    public void SetLiftedCell(int cell)
+    {
+        if (liftedCell == cell)
+        {
+            return;
+        }
+
+        int previous = liftedCell;
+        liftedCell = cell;
+
+        ApplyLifted(previous);
+        ApplyLifted(cell);
+        RefreshTopLabel(previous);
+        RefreshTopLabel(cell);
+    }
+
+    /// <summary>Show or hide one cell's top tile to match <see cref="liftedCell"/>.</summary>
+    void ApplyLifted(int cell)
+    {
+        if (!StairsConst.IsCell(cell))
+        {
+            return;
+        }
+
+        List<GameObject> steps = towerSteps[cell];
+        if (steps == null || steps.Count == 0)
+        {
+            return;
+        }
+
+        GameObject top = steps[steps.Count - 1];
+        if (top != null)
+        {
+            top.SetActive(cell != liftedCell);
+        }
+    }
+
+    /// <summary>
+    /// Cache the label LateUpdate turns for this cell: the topmost tile that is actually visible,
+    /// which is not the top of the stack while one tile is in hand. Everything below it is buried
+    /// inside the tile above and never seen.
+    /// </summary>
+    void RefreshTopLabel(int cell)
+    {
+        if (!StairsConst.IsCell(cell))
+        {
+            return;
+        }
+
+        towerTopLabel[cell] = null;
+
+        List<GameObject> steps = towerSteps[cell];
+        if (steps == null)
+        {
+            return;
+        }
+
+        for (int i = steps.Count - 1; i >= 0; i--)
+        {
+            GameObject step = steps[i];
+            if (step == null || !step.activeSelf)
+            {
+                continue;
+            }
+
+            Transform authored = HierarchyUtils.FindDescendant(step.transform, StairsConst.StepLabelName);
+            towerTopLabel[cell] = authored != null ? authored.GetComponent<TMP_Text>() : null;
+            return;
+        }
     }
 
     public StairsTint PawnTint(int seat)

@@ -5,22 +5,30 @@ of the rest of `docs/`: the plan with the evidence attached, so a claim can be c
 taken on trust. Line references are against the working tree at `b0e31dd` plus the one uncommitted
 change to `Assets/Scripts/Stairs/StairsView.cs`.
 
-> **Status: MOSTLY APPLIED**, as of the commit that carries this file. Read this block before
-> trusting any "Verified" in the table — three things below did not land, and one of them is still a
-> visible defect.
+> **Status: APPLIED**, all six sections. It landed in two passes — §1, §4 and §5 in full first, with
+> §2's tower billboard, §3.3's local hide and the whole of §6 following in the next commit. Where the
+> code came out differently from the plan below, this block is the record:
 >
 > | § | State |
 > | --- | --- |
 > | 1 | **Applied in full.** The turn state is on `StairsSeat`; the five `NetworkVariable`s and `IsSeatToAct` are gone. |
-> | 2 | **Applied to the End Turn key and both step prefabs. NOT applied to the tower billboard** — `StairsView.cs:711` still reads `LookRotation(up, away.normalized)` where §2.3 and §5.4 both say `-up`, so **tower height numbers currently render mirrored.** One line. |
-> | 3 | **Applied**, except §3.3: `SetLiftedCell`/`liftedCell`/`ApplyLifted` were never written, `HighlightTarget` does not skip a hidden tile, and `MoveGhost` has no source-square `y` offset. A tile being re-laid is therefore drawn both in hand and on its tower. `BeginDrag` also sets `dragFromCell` for *every* role rather than only `TowerStep`, which is harmless — nothing reads it for the other two. |
-> | 4 | **Closed without code.** Cause B (the game never left `Setup` with one seat occupied) is removed by §1; the rule questioned in §4.5 stands, per §9. The §4.4 diagnostic was not left in the tree. |
+> | 2 | **Applied in all three places** — the End Turn key, both step prefabs, and the tower billboard (`LookRotation(-up, away)`). |
+> | 3 | **Applied in full**, §3.3 included. The label cache is folded into it: `RefreshTopLabel` walks down to the topmost *visible* step, so the number exposed under a lifted tile is the one that gets billboarded. |
+> | 4 | **Closed without code.** Cause B (the game never left `Setup` with one seat occupied) is removed by §1; the rule questioned in §4.5 stands, per §9. The §4.4 diagnostic was never left in the tree. |
 > | 5 | **Applied in full.** The `Labels` root, `towerLabels`, `labelTemplate`, `labelColors`, `labelScale` and `UpdateTowerLabel` are gone; `towerTopLabel` replaces them. |
-> | 6 | **NOT APPLIED.** No `SupplyStepPosition`, no `OwedLiftInSteps`; `ReconcileSupply` still uses the inline arithmetic and nothing lifts the tiles a player owes. |
+> | 6 | **Applied.** `SupplyStepPosition` + `OwedLiftInSteps`, and the owed pass at the end of `ReconcileSupply`. §6.3's optional tint was **not** taken — the lift alone is enough and the tint has the clearing problem §6.3 describes. |
 >
-> Two other departures from the plan, both deliberate-looking and both harmless: `StairsSelection.Update`
-> calls `ClearHighlights()` before `Bind()` and then calls `Bind()` a second time, and `CanDrag` now
-> refuses outright while a pawn is selected so the click and drag idioms cannot fight over one press.
+> Departures from the code written out below, all deliberate:
+>
+> - `RefreshTopLabel` replaces the plan's inline top-label block in `ReconcileTower`, because §3.3's
+>   hide means "top of the stack" and "the label you can see" stopped being the same tile.
+> - `ReconcileSupply` positions **every** tile in one pass at the end rather than only at build time.
+>   The plan's version left already-built tiles where they were, so the lift never appeared on a stack
+>   that had not changed size.
+> - `CanDrag` refuses outright while a pawn is selected, so the click and drag idioms cannot fight
+>   over one trigger press.
+> - `StairsSelection.Update` calls `ClearHighlights()` before `Bind()` and then calls `Bind()` a
+>   second time. Redundant, harmless, and left alone.
 
 | § | Asked for | What actually has to change | Confidence |
 | --- | --- | --- | --- |

@@ -205,6 +205,13 @@ because it is part of the board.
 
 - The supply is **4 stacks of 10** — tall enough to point at, short enough not to hide the board, and
   it empties one stack at a time from the last.
+- **The tiles a player owes float one thickness clear of the stack** during their `Build`, so how many
+  are left to place reads across the table without reading the status line. A *position* and not a
+  tint, deliberately: `StairsSelection` (25) clears every highlight it applied at the top of its own
+  `Update`, after `StairsView` (20) has run, so a tint set during `Reconcile` would be wiped the first
+  frame the pointer hovered a supply tile and never come back. Nothing contests a position. It
+  updates itself for free, because `stepsToPlace` lives on the seat and every write to it is an
+  `OnListChanged` → `BoardChanged` → `Reconcile`.
 - The captured pile is drawn in the **opponent's** colour, because half the point of a pile in front
   of you is that everyone can see whose tiles they were. Only the first `CapturedVisualCap` (20) are
   drawn; the count in the status line is the truth.
@@ -236,6 +243,20 @@ fight over the same trigger press.
 > gives: one implementation, so the client's highlight and the server's answer cannot disagree.
 > `StairsGame.CanLiftStep` is the client's cheap "may I?", and it fills its **own** scratch `askView`
 > rather than touching `serverView`.
+
+**A lifted tile comes off the board locally**, via `StairsView.SetLiftedCell` — otherwise the player
+sees the tile in hand *and* the tile still on the tower. It is a `SetActive(false)` on that cell's top
+step and nothing more: the server still has the tile there, and the drag may be abandoned. Three
+things follow from it, and all three are load-bearing:
+
+- The ghost is **cloned before** the tile is hidden. `Instantiate` copies `activeSelf`, so cloning
+  from a deactivated tile gives an invisible ghost.
+- `ReconcileTower` re-applies the hide on every rebuild, because the opponent building anywhere marks
+  the whole board dirty and would otherwise put the tile back under the player's hand.
+- The state still counts the lifted tile, so over its **own** square the ghost is one thickness too
+  high and `MoveGhost` subtracts it. `HighlightTarget` and the label cache both walk down to the
+  topmost *visible* step for the same reason — which also means the number underneath is exposed, and
+  that number is exactly the height the tower would have if the tile were laid elsewhere.
 
 Clicking your own pawn selects it and lights its legal moves; clicking one of those takes it, and the
 pawn **stays selected**, because a turn is usually several steps and the momentum rule makes the next
@@ -342,12 +363,6 @@ reading the Hierarchy, not contracts.
   player leaves — but neither win condition can be reached against an empty seat either, so it just
   never ends.
 - `CapturedVisualCap` means a capture of a tower taller than 20 shows fewer tiles than the count says.
-- **Tower numbers render mirrored.** `StairsView.LateUpdate` still billboards with
-  `LookRotation(up, away)` where the rule above says `-up`. The prefabs and the End Turn key were
-  fixed; this one line was not. One-line fix, `StairsView.cs:711`.
-- **A tile being re-laid is drawn twice** — once in hand as the ghost, once still sitting on its
-  tower, because the local hide (`StairsView.SetLiftedCell`, `bugFixesStairsGame.md` §3.3) was never
-  built. Harmless but confusing, and it also means the ghost sits one level too high over its own
-  source square.
-- **The tiles a player owes are not lifted out of their supply** — `bugFixesStairsGame.md` §6 is
-  designed but unbuilt. The count is in the status line and nowhere else.
+- **A committed re-lay flickers.** `CommitDrag` sends the RPC and ends the drag in the same frame, so
+  the source tile comes back for the round trip before the state arrives and removes it. That is the
+  no-prediction rule working as intended, not a defect to paper over locally.

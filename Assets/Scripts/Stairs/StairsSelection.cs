@@ -325,7 +325,9 @@ public class StairsSelection : MonoBehaviour
     void BeginDrag(StairsView pieces, StairsPieceTag piece)
     {
         // Cloned from the live piece rather than from its prefab, so the ghost is exactly what the
-        // player grabbed — seat colour included, which a bare prefab would not carry.
+        // player grabbed — seat colour included, which a bare prefab would not carry. It also has to
+        // be cloned BEFORE the tile is hidden below: Instantiate copies activeSelf, so a ghost
+        // cloned from a deactivated tile would itself be invisible.
         ghost = pieces.CreateGhost(piece.gameObject);
         if (ghost == null)
         {
@@ -336,8 +338,12 @@ public class StairsSelection : MonoBehaviour
         tint.SetHighlight(GhostColor, GhostStrength);
 
         dragRole = piece.role;
-        dragFromCell = piece.cell;
+        dragFromCell = piece.role == StairsPieceRole.TowerStep ? piece.cell : StairsConst.NoCell;
         mode = Mode.Dragging;
+
+        // Now take it off the board, so the player has one tile in hand rather than two on screen.
+        // NoCell for the other two roles, which were never on the board to begin with.
+        pieces.SetLiftedCell(dragFromCell);
     }
 
     void MoveGhost(StairsView pieces, int seat, int cell)
@@ -349,9 +355,18 @@ public class StairsSelection : MonoBehaviour
 
         if (legalCells.Contains(cell))
         {
-            ghost.transform.localPosition = dragRole == StairsPieceRole.Pawn
+            Vector3 point = dragRole == StairsPieceRole.Pawn
                 ? pieces.PawnPoint(cell)
                 : pieces.PlacementPoint(cell);
+
+            // A lifted tile is still in the tower as far as the state is concerned — only the local
+            // visual came off — so its own square reads one level too tall while it is in hand.
+            if (dragRole == StairsPieceRole.TowerStep && cell == dragFromCell)
+            {
+                point.y -= pieces.StepThickness;
+            }
+
+            ghost.transform.localPosition = point;
             return;
         }
 
@@ -390,6 +405,16 @@ public class StairsSelection : MonoBehaviour
             Destroy(ghost);
             ghost = null;
         }
+
+        // Put back whatever was taken off the board. Read through the singleton rather than a passed
+        // reference because Cancel() reaches here from OnDisable and from a scene change, when the
+        // view may already be gone.
+        if (StairsView.Instance != null)
+        {
+            StairsView.Instance.SetLiftedCell(StairsConst.NoCell);
+        }
+
+        dragFromCell = StairsConst.NoCell;
         mode = Mode.Idle;
     }
 
