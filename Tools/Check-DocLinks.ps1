@@ -23,6 +23,7 @@ $docs = @(
     'GEMINI.md'
     'README.md'
     'Assets\Scripts\CLAUDE.md'
+    'Assets\Scripts\Store\CLAUDE.md'
     'Assets\Scripts\Plateau\CLAUDE.md'
     'Assets\Scripts\Bash\CLAUDE.md'
     'Assets\Scripts\Stairs\CLAUDE.md'

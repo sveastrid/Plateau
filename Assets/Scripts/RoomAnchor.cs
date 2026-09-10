@@ -61,7 +61,35 @@ public class RoomAnchor : NetworkBehaviour
     public NetworkVariable<bool> voiceEnabled = new NetworkVariable<bool>(
         false, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Server);
 
+    // --- What kind of room this is. Server-written, alongside the anchor identity and the content
+    // pose, because they are the same kind of fact — about the room, not about a player — and a
+    // late joiner then gets all of them in one replication pass.
+    //
+    // A public room is listed in the directory and locked to one game: RequestGameServerRpc refuses
+    // anything else, and the room menu shows only that game with a line saying why. A private room
+    // may play anything in the room's combined library.
+    public NetworkVariable<bool> isPublic = new NetworkVariable<bool>(
+        false, NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Server);
+    public NetworkVariable<FixedString32Bytes> roomGameKey = new NetworkVariable<FixedString32Bytes>(
+        "", NetworkVariableReadPermission.Everyone, NetworkVariableWritePermission.Server);
+
     private RelayVivox voice;
+
+    /// <summary>The game a public room is locked to, or null when the room is private.</summary>
+    public static string LockedGameKey
+    {
+        get
+        {
+            RoomAnchor room = Instance;
+            if (room == null || !room.isPublic.Value)
+            {
+                return null;
+            }
+
+            string key = room.roomGameKey.Value.ToString();
+            return string.IsNullOrEmpty(key) ? null : key;
+        }
+    }
 
     public override void OnNetworkSpawn()
     {
@@ -69,6 +97,12 @@ public class RoomAnchor : NetworkBehaviour
 
         if (IsServer)
         {
+            // RoomOptions carries the host's choice across the few frames between the Play panel
+            // and OnServerStarted, where BoardAnchor spawns this. It is a static and therefore
+            // outlives a scene, which is why BoardAnchor.Awake resets it.
+            isPublic.Value = RoomOptions.IsPublic;
+            roomGameKey.Value = RoomOptions.GameKey ?? "";
+
             // A holder who crashes, drops wifi, or is disconnected by NetworkReconnectHandler must
             // not lock the board for the rest of the session.
             NetworkManager.Singleton.OnClientDisconnectCallback += HandleClientDisconnect;

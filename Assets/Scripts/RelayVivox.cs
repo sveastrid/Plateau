@@ -101,6 +101,12 @@ public class RelayVivox : MonoBehaviour
                 allocation.ConnectionData
             );
             */
+
+            // Approval on, and this client's name + library loaded, in the last line before the
+            // session starts. Both entry points call the same method so the host and the joiner
+            // cannot put different values into the config hash — see RoomApproval.
+            PrepareApproval(true);
+
             NetworkManager.Singleton.StartHost();
         }
         catch (RelayServiceException e)
@@ -136,6 +142,9 @@ public class RelayVivox : MonoBehaviour
                 joinAllocation.HostConnectionData
             );
             */
+
+            PrepareApproval(false);
+
             NetworkManager.Singleton.StartClient();
         }
         catch (RelayServiceException e)
@@ -143,6 +152,29 @@ public class RelayVivox : MonoBehaviour
             Debug.Log(e);
             throw e;
         }
+    }
+
+    /// <summary>
+    /// Switch Netcode's connection approval on and load the payload, immediately before
+    /// StartHost/StartClient.
+    ///
+    /// RoomApproval belongs on this same GameObject (the Network Manager), which Netcode marks
+    /// DontDestroyOnLoad. Missing it is survivable but leaves approval off, so it says so loudly:
+    /// a room where half the joiners went through approval and half did not is a config-hash
+    /// mismatch, which refuses with no reason string.
+    /// </summary>
+    private void PrepareApproval(bool asHost)
+    {
+        RoomApproval approval = GetComponent<RoomApproval>();
+        if (approval == null)
+        {
+            Debug.LogError("RelayVivox: no RoomApproval on the Network Manager object. Names and " +
+                           "libraries will not travel with the connection, and a build with it " +
+                           "and a build without it cannot join each other.");
+            return;
+        }
+
+        approval.Prepare(myUserDisplayName, asHost);
     }
 
     // ------------------------------------------------------------------ voice

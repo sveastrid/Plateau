@@ -1,39 +1,51 @@
 using System;
 using System.Collections;
-using System.Collections.Generic;
 using UnityEngine;
-using UnityEngine.XR;
-using TMPro;
 using Unity.Netcode;
 using Unity.Services.Relay;
-//using Unity.Services.Authentication;
-using Unity.Services.Core;
-using Unity.Collections;
-using System.Threading.Tasks;
-using UnityEngine.UI;
 
+/// <summary>
+/// Opening and joining a room. Everything below <see cref="HostRoom"/> and <see cref="JoinRoom"/>
+/// is unchanged from the version that drove the 40-key lobby keyboard — the connectInFlight latch,
+/// the 15 s watchdog, the three failure callbacks converging on one ShowJoinFailed, the
+/// Shutdown-before-retry. That is deliberate: the lobby rewrite replaced *what calls* these, not
+/// what they do, and this is the flakiest path in the project.
+///
+/// What is gone is the keyboard state machine that used to sit in Update() reading
+/// pointerControl.currentLetter one character at a time. <see cref="LobbyController"/> owns the UI
+/// now and this owns the connection; the two meet at <see cref="Status"/> and the two public
+/// methods.
+///
+/// ShowJoinFailed's relative 7 cm nudge of the instructions transform, and the joinedRelay
+/// idempotence guard that existed only to stop the nudge being applied twice, went with the
+/// keyboard. The message goes in the panel's status line instead.
+/// </summary>
 public class GameController : MonoBehaviour
 {
-    //So you can get user inputs
-    public InputReader inputs;
     public RelayVivox relayVivoxStarter;
-    public GameObject inputField;
-    public TextMeshPro instructions;
-    public TextMeshPro instructionsSubfield;
 
-    public Transform rh;
-    public Transform lh;
-    public pointerControl pointer;
-
-    public static string joinCode="";
+    public static string joinCode = "";
     public static string nickName = "";
-    private bool joinedRelay = false;
-    private keyInfo pressedKey;
 
     [Tooltip("How long to wait for the connection to come up before telling the player it failed. " +
              "UnityTransport is configured for 60 x 1000 ms connect attempts, so without this the " +
              "lobby sits on \"Joining room...\" for a full minute and then forever.")]
     public float JoinTimeoutSeconds = 15f;
+
+    /// <summary>
+    /// Whatever the player should be told right now, raised whenever it changes. LobbyController
+    /// puts it in the Play panel's status line. Nothing here touches a TextMeshPro.
+    /// </summary>
+    public event Action<string> Status;
+
+    /// <summary>
+    /// Raised when a host or join attempt ends in failure, after <see cref="Status"/>. The lobby
+    /// re-enables its rows off this rather than polling <see cref="Busy"/>.
+    /// </summary>
+    public event Action Failed;
+
+    /// <summary>True while a host or join is in flight. The lobby greys its rows on it.</summary>
+    public bool Busy => connectInFlight;
 
     // Guards the async host/join path against being entered twice. Both entry points are
     // `async void`, so this has to be set before the first await and cleared on every failure path.
@@ -41,29 +53,15 @@ public class GameController : MonoBehaviour
 
     private Coroutine joinWatchdog;
 
-    // Start is called before the first frame update
     void Start()
     {
-        // The keyboard IS the interaction here — there is no menu to gate the pointer behind — so
-        // it has to be on from the first frame or no key can ever be pressed.
-        //
-        // OpeningScene DOES have a MenuControl: it comes in with PersistentRig. Both this and
-        // MenuControl.ApplyPointerDefault write the pointer's active state on load, and Unity gives
-        // no ordering guarantee between two Start() calls, so the two must AGREE rather than one
-        // winning. MenuControl's lobby branch is what makes them agree; do not remove either half.
-        if (pointer != null)
-        {
-            pointer.gameObject.SetActive(true);
-        }
-
         // Start(), not OnEnable(): NetworkManager.Awake must have run for Singleton to exist, and
         // both live in OpeningScene with no ordering guarantee between them.
         //
         // Relay handing out an allocation only means the REST call worked. The DTLS handshake and
         // Netcode's own handshake happen afterwards and were previously unwatched, so any failure
         // after JoinAllocationAsync left the lobby on "Joining room..." with no error, no timeout
-        // and no retry. NetworkProbe covers the same events for the whole life of the app; this
-        // covers the one thing the probe cannot, which is putting the player back at the keyboard.
+        // and no retry.
         if (NetworkManager.Singleton != null)
         {
             NetworkManager.Singleton.OnClientDisconnectCallback += HandleClientDisconnect;
@@ -80,123 +78,29 @@ public class GameController : MonoBehaviour
         }
     }
 
-    // Update is called once per frame
-    void Update()
+    // ------------------------------------------------------------------ what the lobby calls
+
+    /// <summary>
+    /// Open a room. <see cref="RoomOptions"/> has already been set by the Play panel and decides
+    /// whether it is listed publicly and which game it is locked to.
+    /// </summary>
+    public void HostRoom(string playerName)
     {
-        //Get input from keyboard and update the joincode string
-        if (inputs.RightMainTriggerDown)
-        {
-            if (pointer.currentKey != null)
-            {
-                pressedKey = pointer.currentKey;
-            }
-
-            //typing the relay room name
-            if (!joinedRelay)
-            {
-                if (pointer.currentLetter == "Clear")
-                {
-                    joinCode = "";
-                    inputField.GetComponent<TMP_InputField>().text = joinCode;
-                }
-                else if (pointer.currentLetter == "Enter")
-                {
-                    joinedRelay = true;
-                    inputField.GetComponent<TMP_InputField>().text = nickName;
-                    instructions.SetText("Pick a Username:");
-                    instructions.color = new Color(0,.98f,.6f,1);
-                    instructions.transform.Translate(new Vector3(0, -.07f, 0));
-                    inputField.GetComponent<TMP_InputField>().placeholder.gameObject.GetComponent<TextMeshProUGUI>().text = "Username...";
-                    instructionsSubfield.gameObject.SetActive(false);
-                    
-                }
-                else if (pointer.currentLetter == "Back")
-                {
-                    if (joinCode.Length > 0)
-                    {
-                        joinCode = joinCode.Remove(joinCode.Length - 1);
-                        inputField.GetComponent<TMP_InputField>().text = joinCode;
-                    }
-                }
-                else
-                {
-                    joinCode = joinCode + pointer.currentLetter;
-                    inputField.GetComponent<TMP_InputField>().text = joinCode;
-                }
-
-                if (pointer.currentKey != null)
-                {
-                    pressedKey.MakeBigger();
-                }
-            }
-            //typing in name to display and joining relay and vivox
-            else
-            {
-                if (pointer.currentKey != null)
-                {
-                    pressedKey.MakeBigger();
-                }
-
-
-                if (pointer.currentLetter == "Clear")
-                {
-                    nickName = "";
-                    inputField.GetComponent<TMP_InputField>().text = nickName;
-                }
-                else if (pointer.currentLetter == "Back")
-                {
-                    if (nickName.Length > 0)
-                    {
-                        nickName = nickName.Remove(nickName.Length - 1);
-                        inputField.GetComponent<TMP_InputField>().text = nickName;
-                    }
-                }
-                else if (pointer.currentLetter == "Enter")
-                {
-                    
-                }
-                else if (pointer.currentLetter != "Enter")
-                {
-                    nickName = nickName + pointer.currentLetter;
-                    inputField.GetComponent<TMP_InputField>().text = nickName;
-                }
-            }
-        }
-
-        if (inputs.RightMainTriggerUp)
-        {
-            if (pressedKey == null)
-            {
-                return;                       // trigger released without ever touching a key
-            }
-
-            pressedKey.MakeSmaller();
-
-            // Clear it here, the way MenuControl does (MenuControl.cs:174). Without this the join
-            // path is re-entrant: TryToJoinRelayVivox deliberately does NOT LoadScene, so for the
-            // seconds between StartClient() and Netcode synchronizing this client into the host's
-            // scene the joiner is still in OpeningScene with a live GameController and pressedKey
-            // still pointing at "Enter". One more press-and-release anywhere in empty space then
-            // re-ran the whole join: a second JoinAllocationAsync whose fresh allocation
-            // INVALIDATES the first, a second SetRelayServerData mid-connection, and a second
-            // StartClient() on a running instance. That kills a join that was already succeeding,
-            // and it is joiner-only — the host leaves this scene immediately.
-            keyInfo acted = pressedKey;
-            pressedKey = null;
-
-            if (acted.keyName == "Enter" && joinedRelay)
-            {
-                if (joinCode == "" && nickName != "")
-                {
-                    HostNewRoom();
-                }
-                else if (nickName != "")
-                {
-                    TryToJoinRelayVivox();
-                }
-            }
-        }
+        nickName = playerName;
+        joinCode = "";
+        HostNewRoom();
     }
+
+    /// <summary>Join a room by its Relay code.</summary>
+    public void JoinRoom(string playerName, string code)
+    {
+        nickName = playerName;
+        joinCode = code ?? "";
+        RoomOptions.SetPrivate();       // a joiner does not own the room's public/private choice
+        TryToJoinRelayVivox();
+    }
+
+    // ------------------------------------------------------------------ the connection
 
     /// <summary>
     /// Host path. StartHost() has to complete before the scene can be loaded, because
@@ -210,7 +114,7 @@ public class GameController : MonoBehaviour
         }
         connectInFlight = true;
 
-        instructions.SetText("Creating room...");
+        Say("Creating room...");
 
         try
         {
@@ -218,8 +122,7 @@ public class GameController : MonoBehaviour
         }
         catch (RelayServiceException)
         {
-            connectInFlight = false;
-            instructions.SetText("Could not create a room. Press Enter to try again.");
+            Fail("Could not create a room.");
             return;
         }
         catch (ArgumentException e)
@@ -228,22 +131,36 @@ public class GameController : MonoBehaviour
             // on RelayVivox names a protocol this Relay allocation does not offer. Not a
             // RelayServiceException, so without this it escapes the async void and the lobby hangs
             // with no message at all.
-            connectInFlight = false;
             Debug.LogError("GameController: relay configuration rejected. " + e.Message);
-            instructions.SetText("Could not create a room. Press Enter to try again.");
+            Fail("Could not create a room.");
             return;
         }
 
         if (NetworkManager.Singleton == null || !NetworkManager.Singleton.IsServer)
         {
-            connectInFlight = false;
-            instructions.SetText("Could not create a room. Press Enter to try again.");
+            Fail("Could not create a room.");
             return;
         }
 
-        // Server-driven. This is what puts the host — and every client that joins later,
-        // via Netcode's synchronization — into StairsGame.
-        GameSelector.LoadGameScene(GameRoutes.DefaultScene);
+        // List it, if the host asked for a public room. After StartHost, not before: the join code
+        // is what the listing carries, and a room nobody can enter is worse than one nobody can see.
+        if (RoomOptions.IsPublic && RoomDirectory.Instance != null)
+        {
+            await RoomDirectory.Instance.PublishAsync(
+                RoomOptions.RoomName, relayVivoxStarter.relayRoomCode, RoomOptions.GameKey,
+                nickName, 12);
+        }
+
+        // Server-driven. This is what puts the host — and every client that joins later, via
+        // Netcode's synchronization — into a game. A public room opens straight into the game it is
+        // locked to; a private one opens into the catalog default.
+        string scene = GameRoutes.DefaultScene;
+        if (RoomOptions.IsPublic && GameRoutes.TryGetScene(RoomOptions.GameKey, out string locked))
+        {
+            scene = locked;
+        }
+
+        GameSelector.LoadGameScene(scene);
     }
 
     private async void TryToJoinRelayVivox()
@@ -254,14 +171,15 @@ public class GameController : MonoBehaviour
         }
         connectInFlight = true;
 
+        Say("Joining room...");
+
         try
         {
             await relayVivoxStarter.JoinRelayAndVivox(nickName, joinCode);
         }
         catch (RelayServiceException)
         {
-            Debug.Log("Caught exception");
-            ShowJoinFailed("Wrong Room Code");
+            ShowJoinFailed("Wrong room code");
             return;
         }
         catch (ArgumentException e)
@@ -273,11 +191,9 @@ public class GameController : MonoBehaviour
             return;
         }
 
-        // No LoadScene here, on purpose. Netcode synchronizes this client into whatever scene
-        // the host already has open — which may be StairsGame or ChasmGame, depending on what
-        // the room is playing right now. Loading a scene here would fight that.
-        instructions.SetText("Joining room...");
-        instructionsSubfield.gameObject.SetActive(false);
+        // No LoadScene here, on purpose. Netcode synchronizes this client into whatever scene the
+        // host already has open — which may be any of the games, depending on what the room is
+        // playing right now. Loading a scene here would fight that.
 
         // Relay accepted us; Netcode has not yet. Everything from here is asynchronous and, until
         // this watchdog, entirely unwatched.
@@ -319,8 +235,12 @@ public class GameController : MonoBehaviour
 
     /// <summary>
     /// A join that Relay accepted but that never became a session — refused by the host, dropped by
-    /// the transport, or simply never answered. Netcode's own config-hash refusal disconnects with
-    /// no reason string, so an empty DisconnectReason is itself informative.
+    /// the transport, or simply never answered.
+    ///
+    /// Connection approval is what changed the interesting case here. Netcode's own config-hash
+    /// refusal still disconnects with no reason string, so an empty DisconnectReason is still
+    /// informative — but a build mismatch or a missing game is now caught one step earlier, by
+    /// RoomApproval, and arrives here as a sentence the player can act on.
     /// </summary>
     private void HandleClientDisconnect(ulong clientId)
     {
@@ -342,16 +262,11 @@ public class GameController : MonoBehaviour
     }
 
     /// <summary>
-    /// Back to the room-code keyboard, with a reason. Both the Relay failure and the Netcode
-    /// failure land here so the two cannot disagree about what "back to the keyboard" means.
-    ///
-    /// Idempotent: the instructions transform is nudged by a RELATIVE 7 cm when the lobby moves to
-    /// username entry, so undoing it twice would walk the text off. joinedRelay gates that.
+    /// Back to the lobby, with a reason. Both the Relay failure and the Netcode failure land here so
+    /// the two cannot disagree about what "back to the lobby" means.
     /// </summary>
     private void ShowJoinFailed(string why)
     {
-        connectInFlight = false;
-
         if (joinWatchdog != null)
         {
             StopCoroutine(joinWatchdog);
@@ -369,20 +284,19 @@ public class GameController : MonoBehaviour
             nm.Shutdown();
         }
 
-        instructions.SetText(why);
-        instructionsSubfield.gameObject.SetActive(true);
-        instructionsSubfield.SetText("Please enter a new code or press Enter to start a new room");
-        instructions.color = new Color(0.22f, .94f, 1f, 1);
-
-        if (joinedRelay)
-        {
-            instructions.transform.Translate(new Vector3(0, .07f, 0));
-            joinedRelay = false;
-        }
-
-        inputField.GetComponent<TMP_InputField>().placeholder.gameObject.GetComponent<TextMeshProUGUI>().text = "Room Code...";
         joinCode = "";
-        inputField.GetComponent<TMP_InputField>().text = joinCode;
+        Fail(why);
     }
 
+    private void Say(string message)
+    {
+        Status?.Invoke(message);
+    }
+
+    private void Fail(string why)
+    {
+        connectInFlight = false;
+        Say(why);
+        Failed?.Invoke();
+    }
 }

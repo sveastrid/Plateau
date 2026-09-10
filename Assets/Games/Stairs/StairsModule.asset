@@ -20,3 +20,14 @@ MonoBehaviour:
   - keyName: New Game
     label: New Game
   keepPointerAlwaysOn: 1
+  productId: mrbg.stairs
+  libraryBit: 0
+  displayName: Stairs
+  blurb: Race your pawns up a stairway you build as you climb. Lay steps, take the
+    height you are owed, and capture the tiles your opponent leaves behind.
+  thumbnail: {fileID: 0}
+  isPaid: 0
+  metaSku: 
+  mockPriceLabel: 
+  minPlayers: 2
+  maxPlayers: 2

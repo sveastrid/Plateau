@@ -18,3 +18,14 @@ MonoBehaviour:
   rulesText: {fileID: 4900000, guid: 5cfb97be945993946ba7859edf496dd4, type: 3}
   menuActions: []
   keepPointerAlwaysOn: 1
+  productId: mrbg.chasms
+  libraryBit: 1
+  displayName: Chasms
+  blurb: Armies on floating plateaus, separated by chasms only a laid bridge can
+    cross. Move troops, span the gaps, and take the central plateau.
+  thumbnail: {fileID: 0}
+  isPaid: 0
+  metaSku: 
+  mockPriceLabel: 
+  minPlayers: 2
+  maxPlayers: 12

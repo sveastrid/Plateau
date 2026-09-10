@@ -23,7 +23,7 @@ Four small types are what let the rest of this folder stop naming games.
 
 | Type | What it is |
 | --- | --- |
-| `GameModule` | A `ScriptableObject` per game: menu key, scene name, label, rules `TextAsset`, extra menu keys, and whether the pointer stays live. One asset per game, kept beside the game (`Assets/Games/Bash/BashModule.asset`). |
+| `GameModule` | A `ScriptableObject` per game: menu key, scene name, label, rules `TextAsset`, extra menu keys, whether the pointer stays live — **and the store half**: `productId`, `libraryBit`, `displayName`, `blurb`, `thumbnail`, `isPaid`, `metaSku`, `minPlayers`/`maxPlayers`. One asset per game, kept beside the game (`Assets/Games/Bash/BashModule.asset`). Both identities live here so the saved-library key and the on-the-wire bit are authored in one place. |
 | `GameCatalog` | The list, at `Assets/Resources/GameCatalog.asset`. Loaded by name because `GameRoutes` is static and `MenuControl` lives on `PersistentRig` — neither has an Inspector slot a scene could fill. `ActiveModule` resolves the loaded scene to its module. |
 | `IGameSession` | The only thing shared code is allowed to know about a game: `OnGameSelected`, `InvokeMenuAction`, `AvatarBadgeForSeat`. Doing nothing / returning null is the normal answer. |
 | `GameSessionRegistry` | Where games put themselves. Games register in `Awake`/`OnNetworkSpawn` and unregister on the way out. |
@@ -50,23 +50,41 @@ and `IslandManager`.
    anonymously, setting `servicesReady`; a failure here (a headset that came up with no network) is
    caught and logged rather than vanishing into the `async void`. `MicPermissions` requests
    `RECORD_AUDIO`.
-2. `GameController.Update()` reads whichever key the laser pointer is touching
-   (`pointerControl.currentLetter`) and commits it on right-trigger down — first a **room code**,
-   then a **username**.
-3. On the final Enter:
-   - **empty room code** → `RelayVivox.CreateRelay()` allocates a Relay slot for **12**, gets a
-     join code, `StartHost()`. This client is the **room owner**. `GameController` then calls
-     `GameSelector.LoadGameScene(GameRoutes.DefaultScene)` → `StairsGame`.
-   - **non-empty code** → `RelayVivox.JoinRelay()` → `StartClient()`. **No `LoadScene` here on
+2. `LobbyController` (on the `Lobby` root) places two `Panel`s off the camera — **Library** dead
+   ahead, **Play** angled to its right — and a `CodePad` over them, and awaits
+   `StoreService.InitializeAsync()`. **There is no keyboard**: the 40-key `Keyboard` root, the
+   `Text Input` canvas and the character-at-a-time state machine that used to live in
+   `GameController.Update()` are all gone. See [Menus, pointer, keys](#menus-pointer-keys).
+3. The player presses a Play row. `LobbyController` sets [`RoomOptions`](#rooms-libraries-and-the-store)
+   and calls one of two methods on `GameController`, which is now purely the connection controller:
+   - **`HostRoom`** → `RelayVivox.CreateRelay()` allocates a Relay slot for **12**, gets a join
+     code, `StartHost()`. This client is the **room owner**. A **public** room is then listed with
+     `RoomDirectory.PublishAsync` and opens straight into the game it is locked to; a private one
+     opens into `GameRoutes.DefaultScene` → `StairsGame`.
+   - **`JoinRoom(code)`** → `RelayVivox.JoinRelay()` → `StartClient()`. **No `LoadScene` here on
      purpose** — Netcode synchronizes the joiner into whatever scene the room already has open. A
      bad code throws `RelayServiceException`, caught in `GameController.TryToJoinRelayVivox()`,
-     which re-prompts through `ShowJoinFailed`. Both entry points take a `connectInFlight` latch,
-     and `pressedKey` is cleared on every press — without that, a second trigger pull during the
-     seconds before the joiner is pulled out of the lobby re-ran the whole join and the fresh
-     allocation invalidated the one already connecting.
-4. Vivox joins a group audio channel named after the room code.
-5. `NetworkManager.OnServerStarted` fires `BoardAnchor.HandleServerStarted`, which instantiates
-   `Room Anchor.prefab` and calls `Spawn(destroyWithScene: false)`.
+     which reports through `ShowJoinFailed`.
+
+   Both entry points still take the `connectInFlight` latch. The other half of that guard — clearing
+   `pressedKey` on every press, so a second trigger pull during the seconds before the joiner leaves
+   the lobby could not re-run the whole join and invalidate the allocation already connecting — is
+   now `Panel`'s, and applies to every panel in the project rather than to one hand-written loop.
+4. **Connection approval** decides before the client is synchronized into a scene. `RelayVivox`
+   calls `RoomApproval.Prepare` on the last line before `StartHost`/`StartClient`, which switches
+   `NetworkConfig.ConnectionApproval` on and loads `ConnectionData` with a `ConnectionPayload` —
+   `(playerName, ownedMask, Application.version)`. The server refuses a build mismatch or, in a
+   public room, a joiner who does not own the game, with a `Reason` the joiner can read.
+5. Vivox joins a group audio channel named after the room code.
+6. `NetworkManager.OnServerStarted` fires `BoardAnchor.HandleServerStarted`, which instantiates
+   `Room Anchor.prefab` and calls `Spawn(destroyWithScene: false)`. `RoomAnchor.OnNetworkSpawn`
+   copies `RoomOptions` onto its two server-written room-kind variables.
+
+**`ConnectionApproval` is a `NetworkConfig` field, and `NetworkConfig` is what the join handshake
+hashes** alongside the `ForceSamePrefabs` prefab set. An old build cannot join a new one, with the
+same reasonless refusal `bugFixes2.md` §0 documents. It is set from **code**, in one method both
+paths call, rather than authored in the scene, so the host and the joiner take the value from the
+same line — but that does not help across builds. Reflash both headsets.
 
 The **Network Manager** GameObject carries `NetworkManager`, `UnityTransport`, `RelayVivox`,
 `BoardAnchor` and `NetworkProbe`. Netcode marks it `DontDestroyOnLoad`, which is why `BoardAnchor`
@@ -155,23 +173,26 @@ of the app, in `OpeningScene`, and could never reset anything for a game scene.
 
 Two consequences that have already caused bugs:
 
-- **`OpeningScene` does have a `MenuControl`** — it arrives with `PersistentRig`. `GameController`
+- **`OpeningScene` does have a `MenuControl`** — it arrives with `PersistentRig`. `LobbyController`
   is not the only thing writing the pointer's state there, so the two have to *agree* rather than
-  one winning: `GameController.Start()` switches the pointer on for the keyboard, and
+  one winning: `LobbyController.Start()` switches the pointer on for its panels, and
   `ApplyPointerDefault` returns `keepPointerAlwaysOn || !GameRoutes.IsGameScene(...)`, which is
   true in the lobby. Unity gives no ordering guarantee between two `Start()` calls, and when these
-  two disagreed the pointer came up dead and no key on the lobby keyboard could be pressed.
+  two disagreed the pointer came up dead and nothing in the lobby could be pressed. (`GameController`
+  held this obligation while the lobby was a keyboard; it no longer touches the pointer at all.)
 - **Prefer setting it on the game's `GameModule`.** If a component really must override it mid-scene,
   call `SetKeepPointerAlwaysOn` and never assign the field: `AdoptSceneDefaults` has already run and
   switched the pointer off by the time any scene component's first `Update` opts in, so a bare field
   write leaves the pointer dead until the player opens and closes the menu. The setter applies the
   flag and re-evaluates in one call. `PlateauSelection` reads the flag and does not write it.
 
-**`GameController` is the one place with direct, non-`Find` serialized references into the rig**
-(`inputs`, `rh`, `lh`, `pointer`) rather than the `Find`-by-name convention everything else here
-uses. That is a liability, not a model to copy: a rename anywhere in `PersistentRig` breaks
-`GameController` at the Inspector level with no runtime fallback, unlike every `Bind()`-style
-component under [Conventions that break silently](../../CLAUDE.md#conventions-that-break-silently).
+`GameController` used to be the one place with direct, non-`Find` serialized references into the rig
+(`inputs`, `rh`, `lh`, `pointer`). Those four are **gone**: it no longer reads input at all, and
+`LobbyController` resolves the Input Reader by name and the pointer through
+`Menu Manager`'s `MenuControl.pointer`, which is the `Bind()`-style convention everything else here
+uses. A rename anywhere in `PersistentRig` now fails the same way everywhere — see
+[Conventions that break silently](../../CLAUDE.md#conventions-that-break-silently) — instead of
+failing at the Inspector level in one component with no runtime fallback.
 
 ## Colocation — one anchor, every headset in the same real room
 
@@ -366,57 +387,114 @@ exist for that and is gone. There is a fallback to finding `Username`/`ScoreTag`
   assignment makes the cones step. A player who has just spawned **snaps** rather than gliding in
   from the origin. The face *value* is smoothed once and drives both the head and the tag, so the
   two cannot diverge.
-- `playerName` is a `FixedString32Bytes` (29 bytes of UTF-8) and is clamped before the ServerRpc —
-  the lobby keyboard has no length limit, and an over-long name would throw *on the server* and
-  take the name down for everybody.
+- `playerName` is a `FixedString32Bytes` (29 bytes of UTF-8) and is clamped — an over-long name
+  throws *on the server* and takes the name down for everybody. **The clamp matters more now.** The
+  name arrives in the connection approval payload, before this object exists, so the server sets it
+  in `OnNetworkSpawn` from `RoomApproval`'s record and clamps there; the owner's `SetPlayerNameServerRpc`
+  is kept as the fallback for a session that never went through the lobby. And the source is no
+  longer a keyboard with a fixed key count — it is `IEntitlementService.DisplayName`, which on a
+  store build is the player's Meta display name and is not length-limited by anything.
 
 ## Menus, pointer, keys
 
+Three surfaces — the lobby's two canvases, the code pad, and the in-room menu — are one toolkit
+(`Assets/Scripts/Ui/`) drawn on world-space Canvases. **Canvas for pixels, colliders for presses.**
+
+There is deliberately **no `EventSystem`-driven uGUI input module**, and adding one is the wrong
+move. `OpeningScene` still carries an `EventSystem` root; it drives nothing. A ray-driven module is
+~250 lines of well-known-but-fiddly code that this project has no other use for, and everything
+pressable here already has a working path: `PointerBeam` (order 24, after its own
+`Physics.SyncTransforms()`) publishes the ray, and `pointerControl`'s trigger capsule reports
+`currentKey` for any collider tagged **`key`**. So uGUI draws the row — `Image`,
+`TextMeshProUGUI`, `RectMask2D` — and the row additionally carries a `BoxCollider`, a kinematic
+`Rigidbody`, the tag `key` and a `keyInfo`. If a later feature genuinely needs `Button`,
+`InputField` focus or `Dropdown`, that is the moment to write a module, not before.
+
+### The toolkit — `Assets/Scripts/Ui/`
+
+| Type | What it is |
+| --- | --- |
+| `Panel` | A world-space Canvas with a header, a status line, an optional detail block and any number of `ScrollList`s. Owns the **one** press model: pressed on trigger **down**, acted on trigger **up**, so sliding off a key cancels it. |
+| `PanelRow` | One pressable row: thumbnail, title, subtitle, right-hand state cell. `Bind(RowData)` rebinds it. |
+| `RowData` | What a row says, plus the **stable id** it acts on. |
+| `ScrollList` | N fixed slots plus a scroll offset. |
+| `CodePad` | A 6 × 6 grid of `A-Z 0-9` plus `Back`, `Clear`, `Cancel` and a submit key, generated from an inactive template. |
+
+**`1 UI unit = 1 mm`, `localScale 0.001`, everywhere.** A 1.2 m × 0.8 m panel is
+`sizeDelta (1200, 800)` and a 96-unit row is 9.6 cm tall — legible at 1.6 m. The project used to
+have two conventions in play at once (`Text Input` at 0.01, the rules panel at 0.002), which is
+exactly how panels end up subtly different sizes. `BuildRulesPanel` was moved onto this one.
+
+**A world-space Canvas draws on its `+Z` face**, so a panel given the camera's own rotation shows
+the player its back. Everything that places one applies a further `180°` about Y, plus a yaw that
+turns a panel sitting to one side back in towards the player. Two consequences that have already
+cost a sign error each: `MenuControl` takes its left offset off the **camera's** `right`, not the
+menu's (after the flip those point opposite ways), and the rules wing is placed in **world** space
+and then parented with `worldPositionStays`, rather than in menu-local coordinates that now run
+backwards on two axes and are in millimetres.
+
+**`ScrollList` recycles, and that is a correctness property, not an optimisation.** A `RectMask2D`
+clips *pixels*, not colliders, so the naive "tall content, slide the content" list leaves rows you
+cannot see sitting where the beam can still press them. Rows that never leave the viewport have
+nothing off-screen to press. Two rules follow:
+
+- **The list refuses to scroll while the right trigger is held.** Without this a press begun on row
+  3 and released after a scroll acts on whatever row 3 now shows — the key object is the same, its
+  `keyName` is not. One `if` removes the whole class of bug.
+- **A row's `keyName` is its stable id** (`GameModule.gameKey`, a lobby id, an action key), never a
+  slot index.
+- Rows are positioned by `anchoredPosition` and **must not** sit under a `LayoutGroup`:
+  `keyInfo.MakeBigger` multiplies `localScale` on press and a layout group would fight it.
+
+`keyInfo` is renderer-agnostic. It swaps a `Material` on a `MeshRenderer` (the 3D keys — the
+`SpawnMenu`, `Key.prefab`) *and* tints a `Graphic` (`targetGraphic`, `onColor`/`offColor`), both
+through one `Apply(bool)`, so "on" cannot come to mean different things in the two. `keyLabel` is
+`TMP_Text`, which both `TextMeshPro` and `TextMeshProUGUI` satisfy. A key with neither renderer is
+legal and still presses.
+
+### The room menu — `RoomMenu.prefab`
+
 `MenuControl` (on `Menu Manager`, one shared instance on `PersistentRig` — see
-[The persistent rig](#the-persistent-rig)). **`X` opens and closes** the menu, which is
-instantiated 1.3 m in front of the camera and 0.7 m to the left. The laser pointer plus the right
-trigger picks a key: pressed on trigger **down**, acted on trigger **up**, so sliding off a key
-cancels it.
+[The persistent rig](#the-persistent-rig)). **`X` opens and closes** the menu, which is instantiated
+1.3 m in front of the camera and 0.7 m to the left. **`X` does nothing in the lobby** — gated on
+`GameRoutes.IsGameScene` — where it used to resolve no local player, warn, and would now open a
+list filtered to nothing.
+
+`Assets/Prefabs/Ui/RoomMenu.prefab` is a **prefab variant of `Panel.prefab`**, so the room menu can
+be re-skinned without touching the lobby's canvases and a fix to the shared row layout still reaches
+both. **`Menu1.prefab` and `Menu2.prefab` are gone from the wiring.** The split existed only to hide
+`Voice Chat` from non-hosts, which with generated rows is one `if`; `OpenMenu1`'s prefab-picking
+branch and its "Menu2 is not assigned" fallback went with it. So did `GameKeyTemplate`,
+`ActionKeyTemplate`, `Row1` and the `ComfortableColumnKeys = 4` ceiling — the old fixed column ran
+the action row into the authored `Voice Chat` key at `z −0.631` past about four games.
 
 Keys are dispatched by **`keyInfo.keyName` string**, never by child index. (The menu this replaced
 resolved widgets with `GetChild(0).GetChild(9).GetChild(13)`, so re-skinning the prefab broke it
 with no compile error.) `pointerControl` reports `keyName`, not the visible label.
 
-**The keys are built at runtime, not authored.** The prefabs hold only `Background`, `Row1`, the
-title, `Exit`, two **inactive template keys** — `GameKeyTemplate` and `ActionKeyTemplate` — and, in
-`Menu1` only, `Voice Chat`. `OpenMenu1` still picks between the two prefabs, because voice is a
-room-wide billed service and only the host is offered the switch. Everything else `MenuControl`
-clones on open:
+Rows are built on open, into the panel's **two** lists:
 
-| Key | Where it comes from | Row1-local position |
+| List | Rows | Source |
 | --- | --- | --- |
-| one per game | `GameCatalog.games`, in catalog order | `x 0.9`, `z 0.163 − 0.149·i` |
-| `Place Anchor` | always | the next step down the same column |
-| the loaded game's own keys | `GameModule.menuActions` of the **active scene's** module | one row lower, spread about `x 0.91` |
+| `Main` (scrolls) | one per game the **room** may play | `RoomLibrary.Playable()` — the catalog filtered by the union of every player's library. In a **public** room, reduced to the one locked game with a line saying why |
+| `Actions` | `Place Anchor`, `Passthrough`, then `Voice Chat: ON/OFF` for the host only, then the loaded game's own keys | `GameModule.menuActions` of the **active scene's** module |
 
-That replaced one authored key per game in *both* prefabs, a `case` per game in `HandleKey`, a
-`KeyScene` dictionary naming which key belonged to which scene, and an `ApplySceneKeyFilter` pass
-that hid the rest after the fact. Only the loaded game's action keys are ever built now, so there is
-nothing to filter.
-
-Cloning a template rather than instantiating `Key.prefab` is deliberate: `Key.prefab` is the *lobby
-keyboard's* key, its label sits at a different offset and scale, and `Row1` carries a non-uniform
-`(0.5, 50, 0.815)` scale that the authored key scales were chosen against. Cloning something already
-correct in that hierarchy keeps all of it out of the code.
+**`Passthrough` is now reachable.** `HandleKey` had handled it since it was written and nothing ever
+built a key for it — a live handler with no way to press it.
 
 `HandleKey` knows exactly three keys — `Passthrough`, `Voice Chat`, `Place Anchor`. Anything else is
 either a game key (`GameRoutes.IsGameKey` → `GameSelector.RequestGame`) or the loaded game's own
 action, handed to `GameSessionRegistry.Active.InvokeMenuAction`. **Nothing in `MenuControl` names a
-game, and adding one must not change that.**
+game, and adding one must not change that.** An unknown key is deliberately inert and logs.
 
-Past about **four** games the column pushes the action row into the authored `Voice Chat` key at
-`z −0.631` and then off the panel; `BuildKeys` warns. Fixing it properly means either two columns or
-generating `Voice Chat` too — which would also collapse `Menu1`/`Menu2` into one prefab.
+**The game-row filter is cosmetic.** `GameSelector.RequestGameServerRpc` runs the same two checks
+server-side — the room's public lock and `RoomLibrary.Union()` — and that is the enforcement, on the
+next line after the `GameRoutes` check that exists for the identical reason.
 
-**`Passthrough` is still one-sided**: `HandleKey` handles it and nothing builds a key for it. To
-make it reachable, generate one in `BuildKeys` beside `Place Anchor`.
-
-An unknown key is deliberately inert and logs.
+**Known rough edge:** the rules wing and the game list both read `rightJoystick.y`
+(`ScrollTextWithJoystick` and `ScrollList`), so with more than five games in the catalog a joystick
+push scrolls both at once. Neither is destructive; fix it by giving `ScrollList` a modifier or by
+moving the rules panel onto a `ScrollList` of its own.
 
 This is **the room menu — not `SpawnMenu`**, the per-player piece menu on the left wrist, which is a
 separate prefab with its own key set and its own dispatcher (`PlateauSpawnMenu.HandleKey`). See
@@ -432,6 +510,81 @@ games) leaves the pointer switched on outside the menu. See [The pointer](Platea
 nothing is tagged that today, so `WorldGrab.CanStart`'s "two grips with a piece in hand is a piece
 grab, not a world grab" check is currently always false — it is there so it does not have to be
 retrofitted the day the first piece becomes grabbable.
+
+## Rooms, libraries and the store
+
+Who may play what, and how a public room is found. The store itself is one level down, in
+[`Store/CLAUDE.md`](Store/CLAUDE.md); this is the part that touches the room.
+
+| Type | Where | What it is |
+| --- | --- | --- |
+| `RoomOptions` | `Lobby/`, static | The host's public/private choice, carried the few frames from the Play panel to `RoomAnchor.OnNetworkSpawn`. **Reset in `BoardAnchor.Awake`**, beside `CameraController2.SetAligned(false)` and for the same reason. |
+| `ConnectionPayload` | `Lobby/` | `(playerName, ownedMask, build)`, hand-encoded with a version byte, in `NetworkConfig.ConnectionData`. |
+| `RoomApproval` | on **Network Manager** | Switches approval on; the server's `ConnectionApprovalCallback`; remembers what each client claimed. |
+| `RoomDirectory` | on **Network Manager** | Unity Lobby as a noticeboard over the unchanged Relay flow. |
+| `PlayerLibrary` | on `Player.prefab` | `NetworkVariable<ulong> ownedMask`, **server-written**, set at spawn from the approval record. |
+| `RoomLibrary` | static | `Union()` — the OR of every spawned `PlayerLibrary`. `Playable()` — the catalog filtered by it. |
+
+**`RoomApproval` and `RoomDirectory` are on the Network Manager**, not the rig or the lobby, for the
+reason `BoardAnchor` and `NetworkProbe` are: Netcode marks that object `DontDestroyOnLoad`, and both
+have to keep working after the host has left the lobby for a game — the directory's ~15 s heartbeat
+above all.
+
+**The room library is the UNION, not the intersection.** Somebody who owns a game can show it to the
+table. Requiring everybody to own it makes buying a game pointless until your whole group has, which
+is the opposite of what a store wants. It is computed **on demand**, when the menu opens and when a
+switch is validated; both are rare, and a cache would need invalidating on spawn, despawn and change.
+
+**The library gate is a UX and social rule, not DRM, and the code says so out loud.** There is no
+dedicated server here — the "server" is another player's headset, and `ownedMask` is asserted by the
+client that sends it, so a modified client can claim to own everything. The paid game's scene and
+assets ship inside the APK either way, because Meta add-ons gate entitlement and not delivery.
+Decide that is acceptable and do not build a defence that cannot work.
+
+**Two server-written `NetworkVariable`s make a room public**, on `RoomAnchor` alongside the anchor
+identity and the content pose, because they are the same kind of fact and a late joiner then gets
+all of them in one replication pass:
+
+- `isPublic` — listed in the directory.
+- `roomGameKey` — the one game it plays. `RequestGameServerRpc` refuses anything else, the room menu
+  shows only that game, and `RoomApproval` refuses a joiner whose mask lacks that bit with
+  `Reason = "You do not own <label>"`.
+
+`RoomAnchor.LockedGameKey` is the static that reads both and answers null for a private room.
+
+### The directory
+
+Unity Lobby is **a directory over the existing Relay flow and nothing more**: the host publishes its
+Relay join code into a lobby, and a browser reads the code back out and goes down
+`RelayVivox.JoinRelay(code)` completely unchanged. The alternative — the Sessions API — replaces
+`RelayVivox` wholesale, including the `connectInFlight` latch, the 15 s watchdog, the `dtls` match
+and the Shutdown-before-retry fix, and re-opens
+[`quest_networking_plan.md`](../../docs/quest_networking_plan.md) in new code.
+
+Four things decide whether it works in practice, and all four are the service's rules rather than
+C#:
+
+1. **Heartbeat or the room vanishes** — a lobby is deleted after roughly 30 s without a ping, so
+   `RoomDirectory` pings every ~15 s for as long as the room is open. That timeout is a *feature*: a
+   host that crashes cannot leave a ghost room in the browser for ever, which is the failure
+   everyone hits when they clean up only on a graceful exit.
+2. **Rate limits are per-lobby and tight** (roughly: query 1/s, update 5 per 5 s, create 2 per 6 s).
+   Refresh is throttled and disabled while a query is in flight; the player count is written by the
+   **host only** and coalesced to at most one update every ~6 s. Having every joiner also join the
+   Lobby so `AvailableSlots` maintained itself would double the heartbeat and leave failure surface
+   for one number.
+3. **The build is published, and rooms this build cannot join are greyed.** This is the highest-value
+   line in the feature: `ForceSamePrefabs` refuses a mismatched build with **no reason string**, so
+   the joiner just sees "Joining room…" for ever. `Different version` in a greyed row turns this
+   project's single most mystifying failure into three readable words. `RoomApproval` catches the
+   same case one step later, for a code typed by hand.
+4. **Degrade, do not block.** If Lobby is unreachable the two public rows go inert with a reason and
+   private rooms keep working. Same principle as the anchoring code.
+
+**Prerequisite, once: Lobby must be enabled for this project in the Unity Cloud dashboard**, as Relay
+and Vivox already are. Same project id, same anonymous sign-in `RelayVivox.Start()` already performs.
+No package change was needed — `com.unity.services.multiplayer` already folds Lobby, Relay and
+Matchmaker into the one assembly `MRBoardGame.Shared.asmdef` references.
 
 ## Passthrough
 
@@ -488,7 +641,7 @@ Control map as it stands:
 | --- | --- |
 | Right trigger | select a menu / keyboard key; in Chasms, select a piece or a destination plateau or spin the chooser; in BASH, select one of your gamepieces; in Stairs, **held** it drags a pawn or a step onto the board — or lifts a tile already laid, to re-lay it — and **tapped** it selects your pawn, takes a move, or presses End Turn |
 | Left trigger | BASH only: fire — lob the arc, then commit the spin-aimed movement line |
-| `X` | open / close the menu |
+| `X` | open / close the room menu — **in a game scene only**; it does nothing in the lobby |
 | `A` | re-align to the room anchor (`BoardAnchor.RequestReAlign`) |
 | `B` | cancel the current piece selection (Chasms), or the current selection or drag (Stairs) |
 | **Left grip alone** | Chasms: open the personal spawn menu (`PlateauSpawnMenu`), held — releasing it, adding the right grip, or opening `Menu1` closes it |

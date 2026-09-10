@@ -125,6 +125,17 @@ public class PlayerControls : NetworkBehaviour
         if (IsServer)
         {
             spawnSlot.Value = PlayerRing.PickFreeSlot(OccupiedSlots());
+
+            // The name now arrives with the connection, before this object existed, so the server
+            // can set it here rather than waiting for the owner's ServerRpc a frame or two later.
+            // The RPC below is kept as the fallback for a session that never went through the
+            // lobby — a game scene opened directly in the Editor.
+            if (RoomApproval.Instance != null &&
+                RoomApproval.Instance.TryGet(OwnerClientId, out ConnectionPayload payload) &&
+                !string.IsNullOrEmpty(payload.playerName))
+            {
+                playerName.Value = Clamp(payload.playerName);
+            }
         }
         spawnSlot.OnValueChanged += HandleSpawnSlotChanged;
 

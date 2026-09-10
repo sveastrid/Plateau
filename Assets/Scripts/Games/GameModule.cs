@@ -53,7 +53,61 @@ public class GameModule : ScriptableObject
     /// </summary>
     public bool keepPointerAlwaysOn = false;
 
+    // ------------------------------------------------------------------ the store
+
+    /// <summary>
+    /// What a player's saved library is keyed by. Stable forever and NEVER reused: the library
+    /// outlives app updates, and on a real store it is also the local half of the Meta add-on
+    /// identity. Convention here is "mrbg.&lt;game&gt;".
+    ///
+    /// It is deliberately not the catalog index. Reordering GameCatalog.games between two app
+    /// versions would otherwise silently hand a player a different game than the one they bought.
+    /// </summary>
+    public string productId = "";
+
+    /// <summary>
+    /// What travels on the wire. 0..63, stable forever and NEVER reused: a room's combined library
+    /// is a ulong mask, 8 bytes against a NetworkList of strings, and it rides in the connection
+    /// approval payload before any object has spawned.
+    ///
+    /// -1 means "not a product" and is what an unfilled module reads as; GameCatalogValidator fails
+    /// the build on it rather than letting it reach a headset.
+    /// </summary>
+    public int libraryBit = -1;
+
+    /// <summary>The store's name for the game. <see cref="menuLabel"/> stays the short key label.</summary>
+    public string displayName = "";
+
+    [TextArea] public string blurb = "";
+
+    public Sprite thumbnail;
+
+    public bool isPaid = false;
+
+    /// <summary>The Meta add-on SKU. Empty when free; required when <see cref="isPaid"/>.</summary>
+    public string metaSku = "";
+
+    /// <summary>
+    /// MOCK ONLY. The real price is the formatted, localized string the platform returns —
+    /// a hardcoded "$4.99" is wrong for most of the planet and is the sort of thing store review
+    /// catches. MetaEntitlementService overwrites this and must never fall back to it.
+    /// </summary>
+    public string mockPriceLabel = "";
+
+    /// <summary>
+    /// Bounded by the Relay allocation and the ring, both 12 (RelayVivox.CreateRelay allocates for
+    /// 12, PlayerRing has 12 slots).
+    /// </summary>
+    public int minPlayers = 2;
+    public int maxPlayers = 12;
+
     public string MenuLabel => string.IsNullOrEmpty(menuLabel) ? gameKey : menuLabel;
+
+    /// <summary>The store name, falling back to the menu label and then to the key.</summary>
+    public string DisplayName => string.IsNullOrEmpty(displayName) ? MenuLabel : displayName;
+
+    /// <summary>This game's bit in a library mask, or 0 when it has no valid bit.</summary>
+    public ulong LibraryMask => libraryBit >= 0 && libraryBit < 64 ? 1UL << libraryBit : 0UL;
 }
 
 /// <summary>

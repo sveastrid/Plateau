@@ -22,3 +22,14 @@ MonoBehaviour:
   - keyName: Random Islands
     label: Random Islands
   keepPointerAlwaysOn: 1
+  productId: mrbg.bash
+  libraryBit: 2
+  displayName: BASH
+  blurb: Four islands in a square of water. Spin-aim your gamepieces, lob artillery
+    over the walls, and knock everybody else in.
+  thumbnail: {fileID: 0}
+  isPaid: 0
+  metaSku: 
+  mockPriceLabel: 
+  minPlayers: 2
+  maxPlayers: 4

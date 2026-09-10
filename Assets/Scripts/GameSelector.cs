@@ -40,6 +40,27 @@ public class GameSelector : NetworkBehaviour
             return;
         }
 
+        // A public room plays one game. The menu already shows only that game, but the menu filter
+        // is cosmetic — this is the enforcement, and it goes on the next line after the GameRoutes
+        // check for exactly the reason that check exists.
+        string locked = RoomAnchor.LockedGameKey;
+        if (locked != null && locked != gameKey)
+        {
+            Debug.LogWarning("GameSelector: client " + rpcParams.Receive.SenderClientId +
+                             " asked for '" + gameKey + "' in a public room locked to '" +
+                             locked + "'.");
+            return;
+        }
+
+        // Nobody in the room owns it. Same argument: MenuControl filters the rows it builds, but a
+        // key name is a client-supplied string and the filter is not what makes it safe.
+        if (!StoreService.MaskAllows(RoomLibrary.Union(), gameKey))
+        {
+            Debug.LogWarning("GameSelector: client " + rpcParams.Receive.SenderClientId +
+                             " asked for '" + gameKey + "', which nobody in the room owns.");
+            return;
+        }
+
         // Before the load, not after: picking the game the room is already in is allowed to reset
         // it, and LoadGameScene below deliberately does nothing in that case, so a scene-load hook
         // would never fire for Chasms -> Chasms.

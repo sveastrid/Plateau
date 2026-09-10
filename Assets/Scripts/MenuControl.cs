@@ -1,28 +1,42 @@
+using System.Collections.Generic;
 using Unity.Netcode;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 
 /// <summary>
-/// The in-headset menu. X opens and closes it; the laser pointer plus the right trigger
-/// picks a key.
+/// The in-headset room menu. X opens and closes it; the laser pointer plus the right trigger picks
+/// a row.
 ///
 /// Keys are dispatched by <see cref="keyInfo.keyName"/>, never by child index. The menu this
-/// replaced resolved every widget with expressions like GetChild(0).GetChild(9).GetChild(13),
-/// so re-skinning the prefab broke it with no compile error.
+/// replaced resolved every widget with expressions like GetChild(0).GetChild(9).GetChild(13), so
+/// re-skinning the prefab broke it with no compile error.
 ///
-/// **The game keys are built at runtime, not authored.** They used to be one object per game in
-/// Menu1.prefab and another in Menu2.prefab, with a case in HandleKey, a row in a KeyScene
-/// dictionary, and a branch in the rules lookup — five edits across three shared files, and two
-/// prefabs to keep in step by hand. Now the catalog is the list: MenuControl clones a template key
-/// once per <see cref="GameModule"/>, and this class no longer knows the name of a single game.
+/// **The rows are built at runtime, not authored.** They used to be one 3D key per game in
+/// Menu1.prefab and another in Menu2.prefab; then a cloned template key per catalog entry, laid out
+/// down a column that ran out of room past about four games. They are now rows in a
+/// <see cref="ScrollList"/> on the shared <see cref="Panel"/> — the same toolkit the lobby's two
+/// canvases use — so the catalog can grow without the layout being re-solved.
+///
+/// Three things the conversion bought, beyond the scrolling:
+///
+///  - **Menu1 and Menu2 collapsed into one prefab.** The split existed only to hide Voice Chat from
+///    non-hosts, which with generated rows is one `if`. OpenMenu1's prefab-picking branch and its
+///    "Menu2 is not assigned" fallback both went with it.
+///  - **Passthrough became reachable.** HandleKey has handled it all along and nothing ever built a
+///    key for it — a live handler with no way to press it.
+///  - **X no longer opens the menu in the lobby**, where it resolved no local player, warned, and
+///    would now open an empty list.
+///
+/// Nothing in this class names a game, and adding one must never change that.
 /// </summary>
 public class MenuControl : MonoBehaviour
 {
     public InputReader inputs;
-    // Two menus, differing only in the Voice Chat key: Menu1 has it, Menu2 does not. Voice is a
-    // room-wide billed service, so only the host is offered the switch — see OpenMenu1.
-    public GameObject Menu1;
-    public GameObject Menu2;
+
+    [Tooltip("RoomMenu.prefab. One prefab for host and client alike — Voice Chat is a row that is " +
+             "generated or not, not a second prefab.")]
+    public GameObject roomMenu;
+
     public Transform myCam;
     public Transform pointer;
     // Optional. Switched off while the menu is open so the game underneath cannot be
@@ -41,37 +55,13 @@ public class MenuControl : MonoBehaviour
     // and a game may still override it within its own scene through SetKeepPointerAlwaysOn.
     public bool keepPointerAlwaysOn = false;
 
-    // Matches the keyName on the key in the menu prefabs exactly, spaces included.
+    // Matches the keyName on the generated row exactly, spaces included.
     private const string VoiceKey = "Voice Chat";
     private const string PassthroughKey = "Passthrough";
     private const string PlaceAnchorKey = "Place Anchor";
 
-    // Objects inside the menu prefabs. The two templates are inactive keys that exist only to be
-    // cloned — one game-key sized, one action-key sized — so the generated keys keep the authored
-    // collider, rigidbody, materials and label scale rather than having them set from code.
-    private const string RowName = "Row1";
-    private const string GameKeyTemplateName = "GameKeyTemplate";
-    private const string ActionKeyTemplateName = "ActionKeyTemplate";
-
-    // Row1-local layout, lifted from where the keys used to be authored. The column ran
-    // 0.163 -> 0.014 -> -0.135 -> -0.282 (Place Anchor), and the action row sat one more step down
-    // at -0.431 with its two keys at x 0.62 and 1.2.
-    private const float KeyColumnX = 0.9f;
-    private const float KeyColumnTopZ = 0.163f;
-    private const float KeyRowSpacing = 0.149f;
-    private const float KeyY = 0.011f;
-    private const float ActionRowCentreX = 0.91f;
-    private const float ActionRowSpacingX = 0.58f;
-
-    // Past this many games the column pushes the action row down into the authored Voice Chat key
-    // at z = -0.631, and then off the Background quad. Not enforced — a warning you can act on beats
-    // a menu that silently drops the game you just added. Fixing it properly means either laying the
-    // column out in two, or generating Voice Chat too and dropping the Menu1/Menu2 split with it.
-    private const int ComfortableColumnKeys = 4;
-
-    private pointerControl currentPointer;
     private GameObject currentMenu;
-    private keyInfo pressedKey;
+    private Panel currentPanel;
 
     /// <summary>
     /// True while the menu is up. Read by anything that also wants the right trigger — the menu
@@ -105,8 +95,7 @@ public class MenuControl : MonoBehaviour
         // the active scene — so these are dangling. Clearing them keeps IsOpen honest rather than
         // relying on Unity's destroyed-object null.
         currentMenu = null;
-        currentPointer = null;
-        pressedKey = null;
+        currentPanel = null;
 
         AdoptSceneDefaults();
     }
@@ -128,13 +117,13 @@ public class MenuControl : MonoBehaviour
 
     /// <summary>
     /// A game scene shows the pointer only while the menu is open, unless its module opted out with
-    /// keepPointerAlwaysOn. The lobby is the exception: its keyboard IS the interaction, and it has
+    /// keepPointerAlwaysOn. The lobby is the exception: its panels ARE the interaction, and it has
     /// no menu to gate the pointer behind.
     ///
-    /// The lobby case is not belt and braces. GameController.Start() switches the pointer on for the
-    /// keyboard, and PersistentRig put a MenuControl in OpeningScene alongside it — so before this
+    /// The lobby case is not belt and braces. LobbyController.Start switches the pointer on for its
+    /// panels, and PersistentRig put a MenuControl in OpeningScene alongside it — so before this
     /// check the two raced on the same frame with no ordering guarantee, and MenuControl won: the
-    /// pointer came up dead and no key on the keyboard could be pressed.
+    /// pointer came up dead and nothing in the lobby could be pressed.
     /// </summary>
     private void ApplyPointerDefault()
     {
@@ -164,42 +153,26 @@ public class MenuControl : MonoBehaviour
 
     void Update()
     {
-        if (inputs == null)
+        if (inputs == null || !inputs.ButtonXDown)
         {
             return;
         }
 
-        if (inputs.ButtonXDown)
-        {
-            if (currentMenu == null)
-            {
-                OpenMenu1(true);
-            }
-            else
-            {
-                CloseMenu();
-            }
-        }
-
-        if (currentMenu == null || currentPointer == null)
+        // Not in the lobby. There is no local player there to resolve, no room to place an anchor
+        // in, and with a library-filtered game list the menu would open empty. The lobby has its
+        // own two panels; X is not one of its controls.
+        if (!GameRoutes.IsGameScene(SceneManager.GetActiveScene().name))
         {
             return;
         }
 
-        // Press on trigger down, act on trigger up, so sliding off a key cancels it.
-        if (inputs.RightMainTriggerDown)
+        if (currentMenu == null)
         {
-            if (currentPointer.currentKey != null)
-            {
-                pressedKey = currentPointer.currentKey;
-                pressedKey.MakeBigger();
-            }
+            OpenMenu1(true);
         }
-        else if (inputs.RightMainTriggerUp && pressedKey != null)
+        else
         {
-            pressedKey.MakeSmaller();
-            HandleKey(pressedKey.keyName);
-            pressedKey = null;
+            CloseMenu();
         }
     }
 
@@ -270,7 +243,8 @@ public class MenuControl : MonoBehaviour
 
     /// <summary>
     /// Ask the server to move the whole room into a game. Any player may do this, not just the
-    /// room owner — the request is validated server-side against GameRoutes.
+    /// room owner — the request is validated server-side against GameRoutes, the room's public
+    /// lock and the room's combined library.
     /// </summary>
     private void RequestGame(string gameKey)
     {
@@ -287,41 +261,40 @@ public class MenuControl : MonoBehaviour
 
     public void OpenMenu1(bool showRules = false)
     {
-        // The host gets the menu with the Voice Chat key; everybody else gets the one without it.
-        // If the local player cannot be resolved yet — it arrives a moment after a scene switch —
-        // this reads as "not the host", which is the safe way round.
-        bool isRoomOwner = LocalPlayerIsRoomOwner();
-        GameObject prefab = isRoomOwner ? Menu1 : Menu2;
-
-        if (prefab == null && !isRoomOwner)
+        if (roomMenu == null || myCam == null)
         {
-            // An unassigned Menu2 must not stop a client opening the menu at all — they would lose
-            // game switching and Place Anchor with it. SetVoiceEnabledServerRpc rejects a non-host
-            // sender regardless, so the worst case here is a key that does nothing.
-            Debug.LogWarning("MenuControl: Menu2 is not assigned on " + name + ", so the client " +
-                             "menu falls back to the host one. The Voice Chat key will show but " +
-                             "will be inert.");
-            prefab = Menu1;
-        }
-
-        if (prefab == null || myCam == null)
-        {
-            Debug.LogWarning("MenuControl: menu prefab or myCam is not assigned; cannot open the menu.");
+            Debug.LogWarning("MenuControl: roomMenu or myCam is not assigned; cannot open the menu.");
             return;
         }
 
-        currentMenu = Instantiate(prefab, myCam.position + menuDistance * myCam.forward.normalized, Quaternion.identity);
-        currentMenu.transform.rotation = myCam.rotation;
-        currentMenu.transform.position += -menuLeftOffset * currentMenu.transform.right;
+        currentMenu = Instantiate(roomMenu, myCam.position + menuDistance * myCam.forward.normalized,
+                                  Quaternion.identity);
 
-        BuildKeys(currentMenu);
+        // The 180 is new and is not cosmetic: a world-space Canvas draws on its +Z face, so a menu
+        // given the camera's own rotation shows the player its back. The offset is taken off the
+        // CAMERA's right, not the menu's — after the flip those point opposite ways, and using the
+        // menu's would put it on the wrong side.
+        currentMenu.transform.rotation = myCam.rotation * Quaternion.Euler(0f, 180f, 0f);
+        currentMenu.transform.position += -menuLeftOffset * myCam.right;
+
+        currentPanel = currentMenu.GetComponent<Panel>();
+        if (currentPanel == null)
+        {
+            Debug.LogError("MenuControl: " + roomMenu.name + " has no Panel component, so the menu " +
+                           "has no rows and no way to press one.");
+            return;
+        }
+
+        pointerControl beam = pointer != null ? pointer.GetComponent<pointerControl>() : null;
+        currentPanel.Bind(inputs, beam);
+        currentPanel.KeyPressed += HandleKey;
+
+        BuildRows();
 
         if (showRules)
         {
             BuildRulesPanel(currentMenu);
         }
-
-        ShowVoiceState();
 
         if (worldRoot != null)
         {
@@ -331,144 +304,119 @@ public class MenuControl : MonoBehaviour
         if (pointer != null)
         {
             pointer.gameObject.SetActive(true);
-            currentPointer = pointer.GetComponent<pointerControl>();
         }
     }
 
-    // ------------------------------------------------------------------ the keys
+    // ------------------------------------------------------------------ the rows
 
     /// <summary>
-    /// Build this menu instance's keys from the catalog and the loaded game.
+    /// The games this room may switch into, then the room's own actions, then the loaded game's.
     ///
-    /// Clone-a-template rather than instantiate Key.prefab: Key.prefab is the *lobby keyboard's*
-    /// key and its label sits at a different offset and scale, and Row1 carries a non-uniform
-    /// (0.5, 50, 0.815) scale that the authored key scales were chosen against. Cloning a key that
-    /// is already correct in this hierarchy avoids reproducing any of that in code.
+    /// Two lists on one panel rather than one: the game list scrolls and the action list does not,
+    /// and putting the actions in the scrolling list would let a fourth game push Place Anchor off
+    /// the bottom — which is precisely the failure the old fixed column had.
     /// </summary>
-    private void BuildKeys(GameObject menu)
+    private void BuildRows()
     {
-        Transform row = HierarchyUtils.FindDescendant(menu.transform, RowName);
-        if (row == null)
+        BuildGameRows();
+        BuildActionRows();
+    }
+
+    private void BuildGameRows()
+    {
+        ScrollList list = currentPanel.List(0);
+        if (list == null)
         {
-            Debug.LogError("MenuControl: no '" + RowName + "' in " + menu.name + ", so no keys can " +
-                           "be built. The menu will open empty.");
+            Debug.LogError("MenuControl: the room menu's Panel has no list, so no game can be " +
+                           "chosen from it.");
             return;
         }
 
-        Transform gameTemplate = HierarchyUtils.FindDescendant(row, GameKeyTemplateName);
-        Transform actionTemplate = HierarchyUtils.FindDescendant(row, ActionKeyTemplateName);
+        currentPanel.SetHeader("Room");
 
-        if (gameTemplate == null)
+        List<RowData> rows = new List<RowData>();
+        string locked = RoomAnchor.LockedGameKey;
+        string activeScene = SceneManager.GetActiveScene().name;
+
+        if (locked != null)
         {
-            Debug.LogError("MenuControl: no '" + GameKeyTemplateName + "' under " + RowName +
-                           ". It is an inactive key kept in the prefab purely to be cloned; " +
-                           "without it there are no game keys and no Place Anchor.");
-            return;
-        }
-
-        float z = KeyColumnTopZ;
-
-        GameCatalog catalog = GameCatalog.Instance;
-        if (catalog != null)
-        {
-            if (catalog.games.Count > ComfortableColumnKeys)
+            GameCatalog catalog = GameCatalog.Instance;
+            GameModule module = catalog != null ? catalog.ByKey(locked) : null;
+            if (module != null)
             {
-                Debug.LogWarning("MenuControl: " + catalog.games.Count + " games is more than the " +
-                                 "menu column comfortably fits (" + ComfortableColumnKeys + "). The " +
-                                 "action row will start colliding with the Voice Chat key and then " +
-                                 "run off the panel; the menu needs re-laying out.");
-            }
-
-            for (int i = 0; i < catalog.games.Count; i++)
-            {
-                GameModule module = catalog.games[i];
-                if (module == null || string.IsNullOrEmpty(module.gameKey))
+                rows.Add(new RowData(module.gameKey, module.MenuLabel, "Playing")
                 {
-                    Debug.LogWarning("MenuControl: catalog row " + i + " is empty or has no game " +
-                                     "key, so it gets no menu key.");
-                    continue;
-                }
-
-                CloneKey(gameTemplate, row, module.gameKey, module.MenuLabel,
-                         new Vector3(KeyColumnX, KeyY, z));
-                z -= KeyRowSpacing;
+                    subtitle = "This is a public room for one game",
+                    selected = module.sceneName == activeScene,
+                    pressable = false,
+                });
             }
+            currentPanel.SetStatus("Public room — locked to one game.");
         }
-
-        // Place Anchor continues the same column, so it stays below the games however many there
-        // are. It used to be authored at a fixed z, which a fourth game would have landed on top of.
-        CloneKey(gameTemplate, row, PlaceAnchorKey, PlaceAnchorKey, new Vector3(KeyColumnX, KeyY, z));
-        z -= KeyRowSpacing;
-
-        BuildActionKeys(row, actionTemplate, z);
-    }
-
-    /// <summary>
-    /// The loaded game's own keys, spread along one row under the column. Only the game that is
-    /// actually loaded contributes any, which is what replaced the KeyScene dictionary and the
-    /// filter pass that used to hide the other games' keys after the fact.
-    /// </summary>
-    private void BuildActionKeys(Transform row, Transform actionTemplate, float z)
-    {
-        GameModule module = GameCatalog.ActiveModule;
-        if (module == null || module.menuActions == null || module.menuActions.Length == 0)
+        else
         {
-            return;
-        }
-
-        if (actionTemplate == null)
-        {
-            Debug.LogError("MenuControl: " + module.gameKey + " declares " + module.menuActions.Length +
-                           " menu action(s), but there is no '" + ActionKeyTemplateName + "' under " +
-                           RowName + " to build them from.");
-            return;
-        }
-
-        int count = module.menuActions.Length;
-        for (int i = 0; i < count; i++)
-        {
-            GameMenuAction action = module.menuActions[i];
-            if (string.IsNullOrEmpty(action.keyName))
+            // Filtered by the room's combined library, and still naming no game. The filter is
+            // cosmetic: GameSelector.RequestGameServerRpc runs the same check server-side, which is
+            // what actually enforces it.
+            List<GameModule> playable = RoomLibrary.Playable();
+            for (int i = 0; i < playable.Count; i++)
             {
-                continue;
+                GameModule module = playable[i];
+                rows.Add(new RowData(module.gameKey, module.MenuLabel, "")
+                {
+                    selected = module.sceneName == activeScene,
+                });
             }
 
-            float x = ActionRowCentreX + (i - (count - 1) * 0.5f) * ActionRowSpacingX;
-            CloneKey(actionTemplate, row, action.keyName, action.Label, new Vector3(x, KeyY, z));
+            currentPanel.SetStatus(rows.Count == 0
+                                       ? "Nobody in this room owns a game yet."
+                                       : "");
         }
+
+        list.SetData(rows);
     }
 
-    /// <summary>
-    /// One key, cloned from a template that is inactive in the prefab.
-    ///
-    /// overrideNameChange is set because keyInfo.Start() rewrites a key's label with its keyName,
-    /// and on a menu instantiated this frame that has not run yet — without the flag a menuLabel
-    /// that differs from the gameKey would be silently overwritten a moment later. Same reason
-    /// ShowVoiceState sets it.
-    /// </summary>
-    private void CloneKey(Transform template, Transform row, string keyName, string label, Vector3 localPosition)
+    private void BuildActionRows()
     {
-        GameObject clone = Instantiate(template.gameObject, row);
-        clone.name = keyName;
-        clone.transform.localPosition = localPosition;
-        clone.transform.localRotation = template.localRotation;
-        clone.transform.localScale = template.localScale;
-        clone.SetActive(true);
-
-        keyInfo info = clone.GetComponent<keyInfo>();
-        if (info == null)
+        ScrollList list = currentPanel.List(1);
+        if (list == null)
         {
-            Debug.LogError("MenuControl: the key template '" + template.name + "' has no keyInfo, " +
-                           "so '" + keyName + "' can never be pressed.");
             return;
         }
 
-        info.keyName = keyName;
-        info.overrideNameChange = true;
-        if (info.keyLabel != null)
+        List<RowData> rows = new List<RowData>
         {
-            info.keyLabel.SetText(label);
+            new RowData(PlaceAnchorKey, PlaceAnchorKey, ""),
+            // Reachable at last. HandleKey has handled Passthrough since it was written and nothing
+            // ever built a key for it.
+            new RowData(PassthroughKey, PassthroughKey, ""),
+        };
+
+        // Voice is a room-wide billed service, so only the host is offered the switch. That used to
+        // be the entire reason there were two menu prefabs.
+        if (LocalPlayerIsRoomOwner())
+        {
+            bool on = RoomAnchor.Instance != null && RoomAnchor.Instance.voiceEnabled.Value;
+            rows.Add(new RowData(VoiceKey, VoiceKey, on ? "ON" : "OFF") { selected = on });
         }
+
+        // The loaded game's own keys. Only the loaded game contributes any, which is what replaced
+        // the KeyScene dictionary and the filter pass that used to hide the other games' keys after
+        // the fact.
+        GameModule module = GameCatalog.ActiveModule;
+        if (module != null && module.menuActions != null)
+        {
+            for (int i = 0; i < module.menuActions.Length; i++)
+            {
+                GameMenuAction action = module.menuActions[i];
+                if (!string.IsNullOrEmpty(action.keyName))
+                {
+                    rows.Add(new RowData(action.keyName, action.Label, ""));
+                }
+            }
+        }
+
+        list.SetData(rows);
     }
 
     // ------------------------------------------------------------------ the rules panel
@@ -485,17 +433,33 @@ public class MenuControl : MonoBehaviour
         GameModule module = GameCatalog.ActiveModule;
 
         GameObject rulesCanvasGo = new GameObject("RulesCanvas");
-        rulesCanvasGo.transform.SetParent(menu.transform, false);
-        // A wing to the menu's left, turned back in towards the player rather than lying flat
-        // alongside it. Both numbers are menu-local, so they follow wherever OpenMenu1 puts the menu.
-        rulesCanvasGo.transform.localPosition = new Vector3(-0.6f, 0, -0.75f);
-        rulesCanvasGo.transform.localRotation = Quaternion.Euler(0, -75, 0);
 
         Canvas canvas = rulesCanvasGo.AddComponent<Canvas>();
         canvas.renderMode = RenderMode.WorldSpace;
         RectTransform canvasRt = rulesCanvasGo.GetComponent<RectTransform>();
         canvasRt.sizeDelta = new Vector2(800, 800);
-        canvasRt.localScale = new Vector3(0.002f, 0.002f, 0.002f);
+        // 1 UI unit = 1 mm, the toolkit's convention. This panel used to be at 0.002 and Text Input
+        // at 0.01, which is exactly how panels end up subtly different sizes.
+        canvasRt.localScale = new Vector3(0.001f, 0.001f, 0.001f);
+
+        // A wing beyond the menu's left, nearer the player and turned back in towards them rather
+        // than lying flat alongside it.
+        //
+        // Placed in WORLD space off the camera and then parented keeping that pose, rather than in
+        // menu-local coordinates. Two things made the old menu-local offsets wrong: the menu root is
+        // now flipped 180 degrees to face the player, so its local X and Z both run backwards, and
+        // it is itself a Canvas at scale 0.001, so menu-local units are millimetres. Setting the
+        // scale before parenting and passing worldPositionStays leaves both to Unity.
+        Vector3 flat = myCam.forward;
+        flat.y = 0f;
+        flat = flat.sqrMagnitude > 0.0001f ? flat.normalized : Vector3.forward;
+        Vector3 rightAxis = Vector3.Cross(Vector3.up, flat);
+
+        rulesCanvasGo.transform.position = myCam.position + flat * (menuDistance - 0.55f) +
+                                           rightAxis * -(menuLeftOffset + 0.6f);
+        rulesCanvasGo.transform.rotation = Quaternion.LookRotation(flat, Vector3.up) *
+                                           Quaternion.Euler(0f, 180f - 40f, 0f);
+        rulesCanvasGo.transform.SetParent(menu.transform, true);
 
         // A dark background so the text is readable against passthrough.
         UnityEngine.UI.Image bgImage = rulesCanvasGo.AddComponent<UnityEngine.UI.Image>();
@@ -559,10 +523,14 @@ public class MenuControl : MonoBehaviour
 
     public void CloseMenu()
     {
+        if (currentPanel != null)
+        {
+            currentPanel.KeyPressed -= HandleKey;
+            currentPanel = null;
+        }
+
         Destroy(currentMenu);
         currentMenu = null;
-        pressedKey = null;
-        currentPointer = null;
 
         if (pointer != null && !keepPointerAlwaysOn)
         {
@@ -581,13 +549,13 @@ public class MenuControl : MonoBehaviour
         if (currentMenu != null && myCam != null)
         {
             currentMenu.transform.position = myCam.position + myCam.forward.normalized;
-            currentMenu.transform.rotation = myCam.rotation;
+            currentMenu.transform.rotation = myCam.rotation * Quaternion.Euler(0f, 180f, 0f);
         }
     }
 
     /// <summary>
-    /// myPlayer is set by PlayerControls.Setup(). After a scene switch this MenuControl is a
-    /// brand-new instance in a brand-new scene, so fall back to asking Netcode directly rather
+    /// myPlayer is set by PlayerControls.Setup(). After a scene switch this MenuControl is the same
+    /// instance but the player object may not be, so fall back to asking Netcode directly rather
     /// than depending on rebind order.
     /// </summary>
     private PlayerControls ResolveMyPlayer()
@@ -626,51 +594,6 @@ public class MenuControl : MonoBehaviour
         }
 
         RoomAnchor.Instance.SetVoiceEnabledServerRpc(!RoomAnchor.Instance.voiceEnabled.Value);
-    }
-
-    /// <summary>
-    /// Label the Voice Chat key with the room's current setting, so the host can tell what state
-    /// they are in without asking somebody. The menu is rebuilt on every open and destroyed on
-    /// close, so doing this once here is enough — there is no live menu to update if the value
-    /// changes while the menu is shut.
-    /// </summary>
-    private void ShowVoiceState()
-    {
-        if (currentMenu == null || RoomAnchor.Instance == null)
-        {
-            return;
-        }
-
-        bool on = RoomAnchor.Instance.voiceEnabled.Value;
-        keyInfo[] keys = currentMenu.GetComponentsInChildren<keyInfo>(true);
-
-        for (int i = 0; i < keys.Length; i++)
-        {
-            if (keys[i].keyName != VoiceKey)
-            {
-                continue;
-            }
-
-            // keyInfo.Start() rewrites a key's label with its keyName, and on a menu instantiated
-            // this frame it has not run yet. overrideNameChange is the flag that stops it, so the
-            // ON/OFF text set here is not silently overwritten a moment later.
-            keys[i].overrideNameChange = true;
-            if (keys[i].keyLabel != null)
-            {
-                keys[i].keyLabel.SetText(on ? "Voice Chat: ON" : "Voice Chat: OFF");
-            }
-
-            if (on)
-            {
-                keys[i].KeepOn();
-            }
-            else
-            {
-                keys[i].TurnOff();
-            }
-
-            return;
-        }
     }
 
     /// <summary>Called by PlayerControls once the local player has spawned.</summary>

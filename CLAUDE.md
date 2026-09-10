@@ -18,17 +18,19 @@ Each area below is a closed world. Read this file plus the one row you need — 
 | Working on | Read |
 | --- | --- |
 | Shared platform — rig, colocation, world grab, avatars, menus, input, passthrough | [`Assets/Scripts/CLAUDE.md`](Assets/Scripts/CLAUDE.md) + `Assets/Scripts/*.cs` |
+| The store — entitlements, the library mask, the Meta Platform SDK seam | [`Assets/Scripts/Store/CLAUDE.md`](Assets/Scripts/Store/CLAUDE.md) + `Assets/Scripts/Store/` |
 | **Plateau** (menu key `Chasms`, scene `ChasmGame`) | [`Assets/Scripts/Plateau/CLAUDE.md`](Assets/Scripts/Plateau/CLAUDE.md) + `Assets/Scripts/Plateau/` |
 | **BASH** (menu key `BASH`, scene `BashGame`) | [`Assets/Scripts/Bash/CLAUDE.md`](Assets/Scripts/Bash/CLAUDE.md) + `Assets/Scripts/Bash/` |
 | **Stairs** (menu key `Stairs`, scene `StairsGame`) | [`Assets/Scripts/Stairs/CLAUDE.md`](Assets/Scripts/Stairs/CLAUDE.md) + `Assets/Scripts/Stairs/` |
-| Lobby / join flow | `GameController.cs`, `RelayVivox.cs`, `OpeningScene.unity` |
+| Lobby / join flow | `Assets/Scripts/Lobby/`, `GameController.cs`, `RelayVivox.cs`, `OpeningScene.unity` |
+| Panels, rows, scrolling lists, the code pad | `Assets/Scripts/Ui/` + [Menus, pointer, keys](Assets/Scripts/CLAUDE.md#menus-pointer-keys) |
 
 Nothing in one game's folder should be needed to work on another. If you find yourself reading a
 second game, that is a coupling bug — say so rather than working around it.
 
 **Do not search `Library/`, `Temp/`, `obj/`, `build/`, `.utmp/`, `.vs/`.** `Library/` alone is 25 GB
 and holds 5,948 `Editor/*.cs` files that will drown any unscoped glob. Every `.cs` under `Assets/` is
-first-party and there are only **64** of them, totalling ~0.6 MB.
+first-party and there are only **82** of them, totalling ~0.74 MB.
 
 ## Working with an agent here
 
@@ -208,7 +210,7 @@ working tree and landed in **one commit** on the `mr-passthrough` branch.
 
 | Scene | Role |
 | --- | --- |
-| `OpeningScene` | Lobby. VR keyboard, room code + username entry, hosts or joins. Holds the **Network Manager** and the one **`PersistentRig`** instance. |
+| `OpeningScene` | Lobby. Two world-space panels — **Library** and **Play** — plus a code pad, built by `LobbyController` on the `Lobby` root. Hosts private or public rooms, joins by code or from the public-room browser. Holds the **Network Manager** and the one **`PersistentRig`** instance. The 40-key `Keyboard` and the `Text Input` canvas are **gone**; the `EventSystem` root remains and drives nothing. |
 | `StairsGame` | Default game. `World Root > Board > Cells > Row1…Row8`, eight `Cube`/`Cube (1…7)` cells each — an 8×8 grid — plus `Walls`, and `World Root > Stairs Root` (the game) beside them. |
 | `ChasmGame` | Plateau: 41 `Plateau` and 81 `Bridge Spots` instances under `World Root > Board`. |
 | `BashGame` | BASH: a 3 m square of water inside four walls, four islands, a base per player. |
@@ -229,7 +231,8 @@ just `World Root [RoomContent] > Board > …`, and that is the shape a new game 
 
 **Switching games** goes `MenuControl` → `GameSelector.RequestGame(key)` → `RequestGameServerRpc`,
 where the server validates the key against `GameRoutes` (**never** hand a client string to
-`LoadScene`) and calls `NetworkManager.SceneManager.LoadScene(name, LoadSceneMode.Single)`.
+`LoadScene`), then against the room's public lock and the room's combined library, and calls
+`NetworkManager.SceneManager.LoadScene(name, LoadSceneMode.Single)`.
 **Clients must never call `UnityEngine.SceneManagement.SceneManager.LoadScene` while a session is
 running.** Full flow, including what survives the switch and what rebinds around it:
 [Session flow](Assets/Scripts/CLAUDE.md#session-flow).
@@ -259,12 +262,27 @@ Copy the shape and fill in one asset. **No shared source file is edited, and nei
    destabilising the existing ones.
 3. **A `GameModule` asset** — *Assets > Create > MR Board Game > Game Module*, saved beside the
    game (see `Assets/Games/Bash/BashModule.asset`). It carries the menu key, the scene name, the
-   label, a rules `TextAsset`, any extra menu keys, and whether the laser pointer stays live outside
-   the menu.
+   label, a rules `TextAsset`, any extra menu keys, whether the laser pointer stays live outside
+   the menu — **and the store half**: a `productId`, a `libraryBit`, a display name, a blurb, a
+   thumbnail, and `isPaid` + `metaSku` if it is not free.
+
+   **`productId` and `libraryBit` are stable forever and are never reused.** `productId` keys the
+   player's saved library, which outlives app updates; `libraryBit` (0..63) is what travels on the
+   wire. Neither may be the catalog index — reordering the catalog between two app versions would
+   silently hand a player a different game than the one they bought. Take the next free bit; the
+   three in use are 0 Stairs, 1 Chasms, 2 BASH. See
+   [`Assets/Scripts/Store/CLAUDE.md`](Assets/Scripts/Store/CLAUDE.md).
 4. **A row in `Assets/Resources/GameCatalog.asset`**, and the scene in `EditorBuildSettings`.
 
-That is the whole list. `MenuControl` builds the menu key from the catalog, `GameRoutes` reads the
-catalog, and the rules panel reads the module — none of them learns the game's name.
+That is the whole list. `MenuControl` builds the menu row from the catalog, `GameRoutes` reads the
+catalog, the library panel reads the module, and the rules panel reads the module — none of them
+learns the game's name.
+
+**`GameCatalogValidator` (`Assets/Editor/`) fails the build** on a module that is not in the
+catalog, a duplicate or empty `productId`, a duplicate or out-of-range `libraryBit`, a paid module
+with no SKU, or a `sceneName` missing from `EditorBuildSettings` — which otherwise surfaces only as
+a `Debug.LogError` from `GameSelector`, in a headset, while three people wait. Run it by hand from
+*MR Template > MR > Check Game Catalog*.
 
 Optionally, implement **`IGameSession`** on whatever already owns the game's state and register it
 with `GameSessionRegistry` in `Awake`/`OnNetworkSpawn`. That is how a game gets a reset hook when it
@@ -307,12 +325,18 @@ error if it goes missing.
 those (`face`, `tornado`) are nested-prefab **modification overrides**, so grepping `Player.prefab`
 for `m_Name:` will not find them — look for `propertyPath: m_Name`.
 
-`Menu1.prefab` / `Menu2.prefab` add three: **`Row1`** (the container every key is parented to) and
-the two inactive keys **`GameKeyTemplate`** and **`ActionKeyTemplate`**, which `MenuControl` clones
-once per catalog entry. They exist so the generated keys inherit the authored collider, rigidbody,
-materials and label scale rather than having them set from code — `Key.prefab` is the *lobby
-keyboard's* key and its label sits at a different offset. Delete or rename one and the menu opens
-empty; `MenuControl` logs an error rather than failing silently.
+**`Menu1.prefab`, `Menu2.prefab`, `Row1`, `GameKeyTemplate`, `ActionKeyTemplate`, `Keyboard.prefab`
+and `Key.prefab` are no longer wired to anything.** The room menu is now `RoomMenu.prefab` (a
+variant of `Assets/Prefabs/Ui/Panel.prefab`) and the lobby keyboard is gone. The prefab assets are
+still on disk — see [Dead or unwired code](#dead-or-unwired-code) — so a name in that list breaking
+is now a *silent no-op*, not a broken menu.
+
+What replaced them is not name-based at all: `Panel`, `ScrollList` and `CodePad` hold **serialized
+references** to their viewport, row template, arrows and counter, so a rename is caught by the
+Inspector and each logs an error naming the missing slot rather than opening empty. The one thing
+still matched as a string is `keyInfo.keyName`, which is the point of the whole dispatch model.
+`ScrollList.ScrollUpKey` / `ScrollDownKey` (`"ScrollUp"` / `"ScrollDown"`) are consumed by the list
+that owns them before any panel sees them, so a row must never use those as an id.
 
 **Sibling order under `Plateaus` is the plateau index.** Reordering those 41 children renumbers the
 whole board, and the numbers are on the wire. Adding one at the end is safe.
@@ -339,13 +363,29 @@ and **fails the build** if a foreign entry gets back in. The same hash moves whe
 is edited, so **flash both headsets from the same build, every time.**
 
 **`NetworkVariable` write permission is the security boundary.** `spawnSlot`, `playerName`,
-`roomOwner` and everything on `RoomAnchor` are **server-written**; hand and head poses are
+`PlayerLibrary.ownedMask` and everything on `RoomAnchor` — including its two new room-kind
+variables, **`isPublic`** and **`roomGameKey`** — are **server-written**; hand and head poses are
 owner-written. Every `ServerRpc` that mutates shared state validates the sender.
+
+Two of those are load-bearing beyond replication. `roomGameKey` is what
+`GameSelector.RequestGameServerRpc` refuses a game switch against in a public room, and
+`ownedMask` is what it and `RoomApproval` check a library against. Both come from a client's own
+claim in the connection approval payload, so **the library gate is a UX and social rule, not DRM** —
+there is no dedicated server here and a modified client can claim to own everything. Say so rather
+than building a defence that cannot work; see
+[Rooms, libraries and the store](Assets/Scripts/CLAUDE.md#rooms-libraries-and-the-store).
+
+**`NetworkConfig.ConnectionApproval` is now on**, set from code in `RoomApproval.Prepare` on the
+line before `StartHost`/`StartClient`. `NetworkConfig` is hashed into the join handshake alongside
+the `ForceSamePrefabs` prefab set, so this moved the config hash: **an older build cannot join a
+newer one**, with the same reasonless refusal `bugFixes2.md` §0 describes. Reflash both headsets.
 
 **Static state outlives a scene**, and a Play session with domain reload off:
 `CameraController2.LocalIsAligned`, `WorldGrab.IsActive` / `LocalHoldsWorld`,
 `PassthroughController.passthroughOn`, `GameSelector.s_SwitchInProgress`, `GameController.joinCode` /
-`nickName`. `BoardAnchor.Awake` resets the alignment flag explicitly for this reason.
+`nickName`, `StoreService`'s service and `Ready` flag, and **`RoomOptions`**. `BoardAnchor.Awake`
+resets the alignment flag and `RoomOptions` explicitly for this reason — without the second, one
+public room hosted in a Play session makes every private room after it public.
 
 **`Instance` singletons** (`BoardAnchor`, `RoomAnchor`, `RoomContent`, `PlateauBoard`, `PlateauGame`,
 `PlateauPieceView`, `BashRoot`, `StairsGame`, `StairsBoard`, `StairsView`) are set in
@@ -366,8 +406,14 @@ mean two *games* can no longer collide with each other, which was the worse case
 - `Assets/Scenes/GameScene.unity` — legacy, unreachable, still at build index 3.
 - `Assets/Scenes/SampleScene/` — lighting data for a scene that no longer exists.
 - `MenuControl.worldRoot` is unassigned in every scene, so the board is not hidden behind an open
-  menu. `MenuControl` also has a live `Passthrough` handler that nothing builds a key for — to make
-  it reachable, generate one in `BuildKeys` beside `Place Anchor`.
+  menu.
+- **The lobby keyboard and the old menu prefabs are unreferenced but still on disk**:
+  `Keyboard.prefab`, `Key.prefab`, `Menu1.prefab`, `Menu2.prefab`, `Text Input.prefab` and
+  `Opening Menu.prefab`. Nothing points at any of them since the panel toolkit landed. They were
+  left rather than deleted because `Key.prefab`'s look is the only surviving reference for the 3D
+  key style the `SpawnMenu` still uses; delete them once that is settled.
+- `OpeningScene`'s `EventSystem` root drives nothing, and deliberately so — see
+  [Menus, pointer, keys](Assets/Scripts/CLAUDE.md#menus-pointer-keys).
 - `PlayerControls` resolves the badge label's icon child as **`Gemheart`**, a name Plateau chose,
   even though what the label says is now the loaded game's business (`IGameSession.AvatarBadgeForSeat`).
   Cosmetic; renaming it means editing `Player.prefab`, which moves the join config hash.
@@ -387,6 +433,7 @@ are marked applied, corrected, or out of scope — **check the code before trust
 | [`plateauRules.md`](docs/plateauRules.md) | Plateau's rules. Starting forces and movement are implemented; the rest is still the design target. It says 33 plateaus and the scene has 41 — the code counts children, so the doc is the stale one. |
 | [`BASHRules.md`](docs/BASHRules.md) | BASH's rules. |
 | [`stepsRules.md`](docs/stepsRules.md) | Stairs' rules. **Implemented**, with the turn order deliberately removed — see `bugFixesStairsGame.md` §1. The readings taken where it is ambiguous are listed in [`Assets/Scripts/Stairs/CLAUDE.md`](Assets/Scripts/Stairs/CLAUDE.md). |
+| [`LobbyUpdate.md`](docs/LobbyUpdate.md) | **Applied, steps 1–14.** Replacing the lobby keyboard with two panels — a game library with a mock store, and room create/join for private and public rooms — plus the room menu becoming a scrollable list. §14 records where it came out differently from the plan and what is still untested. **Step 15 (the Meta Platform SDK) is deliberately not done**: the package is not installed and `MetaEntitlementService` has never compiled. |
 | [`BASHUpdate.md`](docs/BASHUpdate.md) | **Applied.** Porting BASH in as a third game: GUID collisions, the world-space → `World Root` local conversion, the scene to build. §14 records where the port differed from the plan. |
 | [`BASHRulesUpdate.md`](docs/BASHRulesUpdate.md) | **Applied.** The rules rework that replaced BASH's joystick-steered shot with spin-aimed movement plus the boat/plane artillery arc. |
 | [`bridgeMovementUpdate.md`](docs/bridgeMovementUpdate.md) | **Applied.** Re-laying a bridge already on the board. Supersedes `bigFixes1.md` §4. |

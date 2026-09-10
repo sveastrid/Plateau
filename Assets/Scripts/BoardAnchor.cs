@@ -91,6 +91,12 @@ public class BoardAnchor : MonoBehaviour
         // in an Editor with domain reload switched off. Start from a known state.
         CameraController2.SetAligned(false);
 
+        // Same reasoning, same line. RoomOptions is what the Play panel writes and what
+        // RoomAnchor.OnNetworkSpawn reads a few frames later; left alone, one public room hosted in
+        // a Play session would make every private room after it public too. This runs once per app
+        // launch, in OpeningScene, before anybody has chosen anything.
+        RoomOptions.Reset();
+
         SceneManager.activeSceneChanged += HandleActiveSceneChanged;
     }
 

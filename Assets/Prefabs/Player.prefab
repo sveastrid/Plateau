@@ -407,6 +407,7 @@ GameObject:
   - component: {fileID: 4966690844495405879}
   - component: {fileID: 5921838794062618373}
   - component: {fileID: 3128456071905283740}
+  - component: {fileID: 4188191219114383534}
   m_Layer: 0
   m_Name: Player
   m_TagString: Untagged
@@ -630,6 +631,24 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   ShowTopMostFoldoutHeaderGroup: 1
+--- !u!114 &4188191219114383534
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 4966690844495405874}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: f168a98efab4b334d9d79dd862fc9ac8, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: MRBoardGame.Shared::PlayerLibrary
+  ShowTopMostFoldoutHeaderGroup: 1
+  ownedMask:
+    UpdateTraits:
+      MinSecondsBetweenUpdates: 0
+      MaxSecondsBetweenUpdates: 0
+    m_InternalValue: 0
 --- !u!1 &6199463554699346733
 GameObject:
   m_ObjectHideFlags: 0
