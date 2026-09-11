@@ -27,18 +27,35 @@ public class ScrollList : MonoBehaviour
              "colours and label scale out of the code.")]
     public PanelRow rowTemplate;
 
-    [Tooltip("Authored, inactive. Shown only when there is more data than slots.")]
+    [Tooltip("Authored, inactive. Shown only when there is more data than slots. A list whose row " +
+             "count can exceed visibleRows MUST have all three: without them the extra rows are " +
+             "reachable only by a joystick push with nothing on screen to suggest it.")]
     public GameObject scrollUp;
     public GameObject scrollDown;
     public TMP_Text counter;
 
+    [Tooltip("Optional heading above the list. Hidden when empty, so a panel that uses one list " +
+             "does not carry a blank strip where the other one's caption would be.")]
+    public TMP_Text caption;
+
     [Tooltip("How many rows are drawn at once. The list allocates this many slots and no more.")]
     public int visibleRows = 6;
 
-    [Tooltip("Row pitch in UI units. 1 UI unit = 1 mm, so 96 is a 9.6 cm row — legible at 1.6 m.")]
-    public float rowHeight = 96f;
+    [Tooltip("Row pitch in UI units. 1 UI unit = 1 mm, so 84 is an 8.4 cm row — legible at 1.6 m. " +
+             "The row template is 76, and the 8-unit difference is the gutter between rows: slots " +
+             "are positioned by pitch, so a row shorter than the pitch gets its gap for free.")]
+    public float rowHeight = 84f;
 
     public InputReader inputs;
+
+    [Tooltip("The beam, so the joystick only scrolls the list it is resting on. Pushed down by " +
+             "Panel.Bind alongside inputs.")]
+    public pointerControl pointer;
+
+    [Tooltip("Only scroll on the joystick while the beam is inside this list's viewport. Two " +
+             "lists and the rules panel all read rightJoystick.y, so without this one push moves " +
+             "every one of them at once.")]
+    public bool joystickNeedsHover = true;
 
     [Tooltip("Joystick repeat: the pause before the second row, then the pause between the rest.")]
     public float firstRepeatDelay = 0.25f;
@@ -96,12 +113,39 @@ public class ScrollList : MonoBehaviour
                 rt.anchoredPosition = new Vector2(0, -i * rowHeight);
             }
 
+            // The press target, not the pixels. The row's BoxCollider is authored against one
+            // panel's viewport width and does not track the RectTransform, so a panel of any other
+            // width would get a target that does not match the row it is drawn on.
+            BoxCollider box = clone.GetComponent<BoxCollider>();
+            if (box != null && rt != null)
+            {
+                float width = viewport.rect.width;
+                float height = rt.rect.height;
+                box.size = new Vector3(width, height, box.size.z);
+                box.center = new Vector3(0f, -height * 0.5f, box.center.z);
+            }
+
             slots[i] = clone.GetComponent<PanelRow>();
             if (slots[i] != null)
             {
                 slots[i].Clear();
             }
         }
+    }
+
+    /// <summary>
+    /// The heading over this list. Empty hides it — the lobby's panels use one list and would
+    /// otherwise carry a blank strip where the room menu's second caption goes.
+    /// </summary>
+    public void SetCaption(string text)
+    {
+        if (caption == null)
+        {
+            return;
+        }
+
+        caption.SetText(text ?? "");
+        caption.gameObject.SetActive(!string.IsNullOrEmpty(text));
     }
 
     /// <summary>
@@ -196,6 +240,15 @@ public class ScrollList : MonoBehaviour
             return;
         }
 
+        // The arrows are the affordance; the joystick is the shortcut, and it only drives the list
+        // the beam is resting on. Both lists on a panel and the rules wing beside it all read
+        // rightJoystick.y, so an unscoped push moved three things at once.
+        if (joystickNeedsHover && !PointerIsOverMe())
+        {
+            lastDirection = 0;
+            return;
+        }
+
         float y = inputs.rightJoystick.y;
         int direction = y > deadZone ? -1 : (y < -deadZone ? 1 : 0);
 
@@ -218,6 +271,21 @@ public class ScrollList : MonoBehaviour
             nextRepeat = Time.unscaledTime + repeatDelay;
             Scroll(direction);
         }
+    }
+
+    /// <summary>
+    /// Is the beam resting on a key that belongs to this list? Its own arrows count — they sit
+    /// outside the viewport, and a player holding the beam on the down arrow should be able to
+    /// flick the stick rather than press it repeatedly.
+    /// </summary>
+    private bool PointerIsOverMe()
+    {
+        if (pointer == null || pointer.currentKey == null)
+        {
+            return false;
+        }
+
+        return pointer.currentKey.transform.IsChildOf(transform);
     }
 
     private void ClampOffset()

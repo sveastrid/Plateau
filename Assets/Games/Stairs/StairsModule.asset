@@ -25,7 +25,7 @@ MonoBehaviour:
   displayName: Stairs
   blurb: Race your pawns up a stairway you build as you climb. Lay steps, take the
     height you are owed, and capture the tiles your opponent leaves behind.
-  thumbnail: {fileID: 0}
+  thumbnail: {fileID: 21300000, guid: fbec713353030934da2b4c81334ad0c4, type: 3}
   isPaid: 0
   metaSku: 
   mockPriceLabel: 

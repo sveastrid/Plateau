@@ -267,15 +267,26 @@ public class MenuControl : MonoBehaviour
             return;
         }
 
-        currentMenu = Instantiate(roomMenu, myCam.position + menuDistance * myCam.forward.normalized,
+        // Yaw-only, off a flattened forward. Two reasons, and neither is cosmetic:
+        //
+        //  - A world-space Canvas is read from its -Z side — the reader looks ALONG the text's own
+        //    forward, which is why the standard billboard is forward = camera.forward and why
+        //    LookAt(camera) mirrors text. There used to be a further 180 here on the opposite
+        //    theory; it mirrored every glyph and turned the panel away. See docs/UIBugFixes.md §1
+        //    and Assets/Scripts/Stairs/CLAUDE.md, "TMP is read from its -Z side".
+        //  - myCam.rotation carried the head's pitch, so a menu opened while looking down at the
+        //    board came up tipped — and the rules wing beside it is placed off a flattened axis
+        //    (BuildRulesPanel), so the two ended up in different planes.
+        Vector3 flat = myCam.forward;
+        flat.y = 0f;
+        flat = flat.sqrMagnitude > 0.0001f ? flat.normalized : Vector3.forward;
+        Vector3 rightAxis = Vector3.Cross(Vector3.up, flat);
+
+        currentMenu = Instantiate(roomMenu, myCam.position + menuDistance * flat,
                                   Quaternion.identity);
 
-        // The 180 is new and is not cosmetic: a world-space Canvas draws on its +Z face, so a menu
-        // given the camera's own rotation shows the player its back. The offset is taken off the
-        // CAMERA's right, not the menu's — after the flip those point opposite ways, and using the
-        // menu's would put it on the wrong side.
-        currentMenu.transform.rotation = myCam.rotation * Quaternion.Euler(0f, 180f, 0f);
-        currentMenu.transform.position += -menuLeftOffset * myCam.right;
+        currentMenu.transform.rotation = Quaternion.LookRotation(flat, Vector3.up);
+        currentMenu.transform.position += -menuLeftOffset * rightAxis;
 
         currentPanel = currentMenu.GetComponent<Panel>();
         if (currentPanel == null)
@@ -333,10 +344,12 @@ public class MenuControl : MonoBehaviour
         }
 
         currentPanel.SetHeader("Room");
+        list.SetCaption("Games");
 
         List<RowData> rows = new List<RowData>();
         string locked = RoomAnchor.LockedGameKey;
         string activeScene = SceneManager.GetActiveScene().name;
+        string code = RoomCode();
 
         if (locked != null)
         {
@@ -351,7 +364,7 @@ public class MenuControl : MonoBehaviour
                     pressable = false,
                 });
             }
-            currentPanel.SetStatus("Public room — locked to one game.");
+            currentPanel.SetStatus(WithCode(code, "Public room — locked to one game."));
         }
         else
         {
@@ -362,18 +375,48 @@ public class MenuControl : MonoBehaviour
             for (int i = 0; i < playable.Count; i++)
             {
                 GameModule module = playable[i];
-                rows.Add(new RowData(module.gameKey, module.MenuLabel, "")
+                bool here = module.sceneName == activeScene;
+
+                // A state cell, because the row is otherwise a bare word with nothing saying that
+                // pressing it moves the whole room into that game.
+                rows.Add(new RowData(module.gameKey, module.MenuLabel, here ? "Playing" : "Play")
                 {
-                    selected = module.sceneName == activeScene,
+                    selected = here,
                 });
             }
 
-            currentPanel.SetStatus(rows.Count == 0
-                                       ? "Nobody in this room owns a game yet."
-                                       : "");
+            currentPanel.SetStatus(WithCode(code, rows.Count == 0
+                                                     ? "Nobody in this room owns a game yet."
+                                                     : ""));
         }
 
         list.SetData(rows);
+    }
+
+    /// <summary>
+    /// The room's Relay join code, or "". Resolved the way VisibleWhenLooking resolves it — the
+    /// Network Manager is DontDestroyOnLoad, so it is reachable from a game scene.
+    ///
+    /// It belongs on this panel: before this, the only way to read the code you needed to give
+    /// somebody was to notice the InfoBlock on your own right hand and stare at it.
+    /// </summary>
+    private static string RoomCode()
+    {
+        GameObject manager = GameObject.Find("Network Manager");
+        RelayVivox relay = manager != null ? manager.GetComponent<RelayVivox>() : null;
+        return relay != null && !string.IsNullOrEmpty(relay.relayRoomCode) ? relay.relayRoomCode : "";
+    }
+
+    /// <summary>The status line: the room code, then whatever else the panel had to say.</summary>
+    private static string WithCode(string code, string message)
+    {
+        string left = string.IsNullOrEmpty(code) ? "" : "Code " + code;
+
+        if (left.Length == 0)
+        {
+            return message;
+        }
+        return message.Length == 0 ? left : left + "   ·   " + message;
     }
 
     private void BuildActionRows()
@@ -384,20 +427,45 @@ public class MenuControl : MonoBehaviour
             return;
         }
 
+        list.SetCaption("Room");
+
+        bool owner = LocalPlayerIsRoomOwner();
+
+        // Place Anchor is room-owner only and the check lives in BoardAnchor, which for anybody
+        // else logs "only the room owner places the anchor" and returns — so the row looked live,
+        // closed the menu and did nothing. Say so on the row instead.
+        RowData anchor = new RowData(PlaceAnchorKey, PlaceAnchorKey, owner ? "" : "Host only")
+        {
+            subtitle = "Line every headset up to this room",
+            pressable = owner,
+        };
+
+        // Passthrough is a toggle and used to be the only one that did not show its state, so
+        // pressing it was a coin toss. Voice Chat below has always shown ON/OFF.
+        bool seeThrough = PassthroughController.IsPassthroughOn();
+
         List<RowData> rows = new List<RowData>
         {
-            new RowData(PlaceAnchorKey, PlaceAnchorKey, ""),
+            anchor,
             // Reachable at last. HandleKey has handled Passthrough since it was written and nothing
             // ever built a key for it.
-            new RowData(PassthroughKey, PassthroughKey, ""),
+            new RowData(PassthroughKey, PassthroughKey, seeThrough ? "ON" : "OFF")
+            {
+                subtitle = "See the real room, or go fully virtual",
+                selected = seeThrough,
+            },
         };
 
         // Voice is a room-wide billed service, so only the host is offered the switch. That used to
         // be the entire reason there were two menu prefabs.
-        if (LocalPlayerIsRoomOwner())
+        if (owner)
         {
             bool on = RoomAnchor.Instance != null && RoomAnchor.Instance.voiceEnabled.Value;
-            rows.Add(new RowData(VoiceKey, VoiceKey, on ? "ON" : "OFF") { selected = on });
+            rows.Add(new RowData(VoiceKey, VoiceKey, on ? "ON" : "OFF")
+            {
+                subtitle = "Talk to everybody in this room",
+                selected = on,
+            });
         }
 
         // The loaded game's own keys. Only the loaded game contributes any, which is what replaced
@@ -457,8 +525,10 @@ public class MenuControl : MonoBehaviour
 
         rulesCanvasGo.transform.position = myCam.position + flat * (menuDistance - 0.55f) +
                                            rightAxis * -(menuLeftOffset + 0.6f);
+        // -40, not 180-40: the panel's forward points away from the reader (see OpenMenu1), and the
+        // negative yaw turns a wing sitting to the player's left back in towards them.
         rulesCanvasGo.transform.rotation = Quaternion.LookRotation(flat, Vector3.up) *
-                                           Quaternion.Euler(0f, 180f - 40f, 0f);
+                                           Quaternion.Euler(0f, -40f, 0f);
         rulesCanvasGo.transform.SetParent(menu.transform, true);
 
         // A dark background so the text is readable against passthrough.
@@ -543,14 +613,24 @@ public class MenuControl : MonoBehaviour
         }
     }
 
-    /// <summary>Keep the menu glued to the camera. Call from a game that needs it.</summary>
+    /// <summary>
+    /// Keep the menu glued to the camera. Call from a game that needs it. Called by nothing today —
+    /// kept in step with OpenMenu1 rather than left holding the old, mirrored rotation for somebody
+    /// to copy.
+    /// </summary>
     public void moveMenu()
     {
-        if (currentMenu != null && myCam != null)
+        if (currentMenu == null || myCam == null)
         {
-            currentMenu.transform.position = myCam.position + myCam.forward.normalized;
-            currentMenu.transform.rotation = myCam.rotation * Quaternion.Euler(0f, 180f, 0f);
+            return;
         }
+
+        Vector3 flat = myCam.forward;
+        flat.y = 0f;
+        flat = flat.sqrMagnitude > 0.0001f ? flat.normalized : Vector3.forward;
+
+        currentMenu.transform.position = myCam.position + flat;
+        currentMenu.transform.rotation = Quaternion.LookRotation(flat, Vector3.up);
     }
 
     /// <summary>

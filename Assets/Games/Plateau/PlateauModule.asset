@@ -23,7 +23,7 @@ MonoBehaviour:
   displayName: Chasms
   blurb: Armies on floating plateaus, separated by chasms only a laid bridge can
     cross. Move troops, span the gaps, and take the central plateau.
-  thumbnail: {fileID: 0}
+  thumbnail: {fileID: 21300000, guid: c9eddeaa1fc51784abc6c1172bcc0def, type: 3}
   isPaid: 0
   metaSku: 
   mockPriceLabel: 

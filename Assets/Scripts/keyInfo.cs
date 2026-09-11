@@ -30,6 +30,11 @@ public class keyInfo : MonoBehaviour
     public bool alwaysOn = false;
     public bool overrideNameChange = false;
 
+    [Tooltip("Grow on press. Right for a 3D key; wrong for a full-width Canvas row, where 20% of " +
+             "1160 units is 116 units off each side into the viewport mask and 19 units down over " +
+             "the next row. A row uses PanelRow.pressedColor instead.")]
+    public bool growOnPress = true;
+
     [Header("Canvas rows")]
     [Tooltip("Filled automatically from this object's own Graphic when left empty. A 3D key has " +
              "none and tints nothing.")]
@@ -77,7 +82,7 @@ public class keyInfo : MonoBehaviour
     /// </summary>
     public void MakeBigger()
     {
-        if (!alreadyBig)
+        if (!alreadyBig && growOnPress)
         {
             this.transform.localScale *= 1.2f;
             alreadyBig = true;
@@ -121,9 +126,29 @@ public class keyInfo : MonoBehaviour
         Apply(false);
     }
 
+    /// <summary>
+    /// Whether the beam is resting on this key. Read by anything that draws a state on top of the
+    /// hover tint and has to put it back afterwards — see PanelRow.ShowPressed.
+    /// </summary>
+    public bool IsOn { get; private set; }
+
+    /// <summary>
+    /// Re-apply the current on/off look. A row tinted for "pressed" calls this on release rather
+    /// than guessing which colour to restore: the trigger may have come up with the beam still on
+    /// the row or halfway down the list, and those want different answers.
+    /// </summary>
+    public void RefreshTint()
+    {
+        if (targetGraphic != null)
+        {
+            targetGraphic.color = IsOn ? onColor : offColor;
+        }
+    }
+
     /// <summary>The one place that decides what "on" and "off" look like, in either renderer.</summary>
     private void Apply(bool on)
     {
+        IsOn = on;
         currentMaterial = on ? onMaterial : offMaterial;
 
         if (meshRenderer != null && currentMaterial != null)

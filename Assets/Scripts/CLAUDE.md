@@ -415,23 +415,44 @@ pressable here already has a working path: `PointerBeam` (order 24, after its ow
 | Type | What it is |
 | --- | --- |
 | `Panel` | A world-space Canvas with a header, a status line, an optional detail block and any number of `ScrollList`s. Owns the **one** press model: pressed on trigger **down**, acted on trigger **up**, so sliding off a key cancels it. |
-| `PanelRow` | One pressable row: thumbnail, title, subtitle, right-hand state cell. `Bind(RowData)` rebinds it. |
+| `PanelRow` | One pressable row: thumbnail, title, subtitle, right-hand state cell. `Bind(RowData)` rebinds it, and also lays it out — the text column starts at the margin when there is no thumbnail, and the title centres itself when there is no subtitle. |
 | `RowData` | What a row says, plus the **stable id** it acts on. |
-| `ScrollList` | N fixed slots plus a scroll offset. |
-| `CodePad` | A 6 × 6 grid of `A-Z 0-9` plus `Back`, `Clear`, `Cancel` and a submit key, generated from an inactive template. |
+| `ScrollList` | N fixed slots plus a scroll offset, an optional caption, arrows and a counter. |
+| `CodePad` | A 6 × 6 grid of `A-Z 0-9` plus `Back`, `Clear`, `Close` and a submit key, generated from an inactive template. |
 
-**`1 UI unit = 1 mm`, `localScale 0.001`, everywhere.** A 1.2 m × 0.8 m panel is
-`sizeDelta (1200, 800)` and a 96-unit row is 9.6 cm tall — legible at 1.6 m. The project used to
+**`1 UI unit = 1 mm`, `localScale 0.001`, everywhere.** A 1.2 m × 0.9 m panel is
+`sizeDelta (1200, 900)` and an 84-unit row pitch is 8.4 cm — legible at 1.6 m. The project used to
 have two conventions in play at once (`Text Input` at 0.01, the rules panel at 0.002), which is
 exactly how panels end up subtly different sizes. `BuildRulesPanel` was moved onto this one.
 
-**A world-space Canvas draws on its `+Z` face**, so a panel given the camera's own rotation shows
-the player its back. Everything that places one applies a further `180°` about Y, plus a yaw that
-turns a panel sitting to one side back in towards the player. Two consequences that have already
-cost a sign error each: `MenuControl` takes its left offset off the **camera's** `right`, not the
-menu's (after the flip those point opposite ways), and the rules wing is placed in **world** space
-and then parented with `worldPositionStays`, rather than in menu-local coordinates that now run
-backwards on two axes and are in millimetres.
+**One type scale, and one sprite.** Header 44, status / detail 26, caption 22, row title 32, row
+subtitle 24, row state 28 — `Panel.prefab` and `CodePad.prefab` are separate prefabs and had already
+drifted a step apart on the header. Every surface is `Assets/Textures/Ui/RoundedRect.png`, a 48 × 48
+white nine-slice with a 14 px border, drawn `Sliced` and tinted by `Image.color`: at the sprite's
+100 PPU against the Canvas' `referencePixelsPerUnit` of 100, that border is 14 UI units of corner
+radius with no `pixelsPerUnitMultiplier` to tune. There was no sprite anywhere before, so every
+surface was a hard-cornered rectangle. `Title` and `State` overflow as **`Ellipsis`**; the wrapping
+prose blocks stay `Truncate`.
+
+**A world-space Canvas is read from its `−Z` side.** The reader looks *along* the text's own
+forward, which is why the standard billboard is `forward = camera.forward` and why `LookAt(camera)`
+famously mirrors text — the same rule [Stairs states at length](Stairs/CLAUDE.md#the-height-labels)
+and the same one `PlayerControls.cs:406` (nametags), `PlateauPieceView.cs:441` and
+`StairsView.cs:744` already obey. So a panel gets `LookRotation(flatForward)` and **nothing else**,
+plus a yaw that turns a panel sitting to one side back in towards the player: positive to the
+player's right, negative to their left.
+
+> Every one of the four placements once carried a further `180°` about Y, on the opposite theory
+> that a Canvas "draws on its +Z face". That mirrored every glyph on every panel *and* turned the
+> panel's readable side away, so the yaw angled a side panel further out instead of in. Removing it
+> is [`UIBugFixes.md`](../../docs/UIBugFixes.md) §1. Do not put it back; if a panel looks wrong,
+> measure it against the nametag, which has always been right.
+
+Panels are placed off a **flattened** forward, not off `myCam.rotation`. The camera's pitch used to
+ride along, so a menu opened while looking down at the board came up tipped while the rules wing
+beside it — placed off a flattened axis all along — stayed level, and the two sat in different
+planes. The rules wing is still placed in **world** space and then parented with
+`worldPositionStays`, rather than in menu-local coordinates, which are millimetres.
 
 **`ScrollList` recycles, and that is a correctness property, not an optimisation.** A `RectMask2D`
 clips *pixels*, not colliders, so the naive "tall content, slide the content" list leaves rows you
@@ -445,6 +466,31 @@ nothing off-screen to press. Two rules follow:
   slot index.
 - Rows are positioned by `anchoredPosition` and **must not** sit under a `LayoutGroup`:
   `keyInfo.MakeBigger` multiplies `localScale` on press and a layout group would fight it.
+- **A list whose row count can exceed `visibleRows` must have all three of `scrollUp`, `scrollDown`
+  and `counter` assigned.** `Actions` shipped with none of them and two slots against three to five
+  rows, so `Voice Chat` and every game action were unreachable — `ScrollList.Rebind`'s `needsArrows`
+  branch had nothing to switch on and the joystick was the only way down, with nothing on screen to
+  suggest it. Both lists now carry arrows and a counter on a caption band above them.
+- **The joystick only scrolls the list the beam is resting on** (`joystickNeedsHover`, default on).
+  The arrows are the affordance; the stick is the shortcut.
+
+**Row geometry is anchored to the row's edges, and that is load-bearing.** `Thumb`, `Title` and
+`Subtitle` anchor to the left edge, `State` to the **right** edge, so the layout survives a panel of
+another width — `CodePad.prefab` is 1000 wide against `Panel.prefab`'s 1200. All four were once
+authored at offsets from the row's *centre* while anchored to its *left*, which put them 580 units
+off the left of the viewport where the `RectMask2D` ate them: every row rendered as a bare coloured
+bar showing only its right-hand cell, and a row whose `state` was `""` — every game row and every
+action row — rendered blank. See [`UIBugFixes.md`](../../docs/UIBugFixes.md) §2.
+
+The row template is **76 units tall in an 84-unit pitch**; slots are positioned by pitch, so the
+difference is the gutter between rows and costs nothing. `ScrollList.EnsureSlots` resizes each
+slot's `BoxCollider` from the viewport's width and the row's height, because a collider does not
+track its `RectTransform` and the authored one was hardcoded to one panel's width.
+
+`keyInfo.growOnPress` is **off on the row templates and on for every other key.** Growing a
+1160-unit row by 20% pushes 116 units off each side into the mask and 19 units down over its
+neighbour. A row uses `PanelRow.pressedColor` instead, restored through `keyInfo.RefreshTint()` so
+that releasing the trigger with the beam elsewhere does not leave the row lit.
 
 `keyInfo` is renderer-agnostic. It swaps a `Material` on a `MeshRenderer` (the 3D keys — the
 `SpawnMenu`, `Key.prefab`) *and* tints a `Graphic` (`targetGraphic`, `onColor`/`offColor`), both
@@ -474,10 +520,24 @@ with no compile error.) `pointerControl` reports `keyName`, not the visible labe
 
 Rows are built on open, into the panel's **two** lists:
 
-| List | Rows | Source |
-| --- | --- | --- |
-| `Main` (scrolls) | one per game the **room** may play | `RoomLibrary.Playable()` — the catalog filtered by the union of every player's library. In a **public** room, reduced to the one locked game with a line saying why |
-| `Actions` | `Place Anchor`, `Passthrough`, then `Voice Chat: ON/OFF` for the host only, then the loaded game's own keys | `GameModule.menuActions` of the **active scene's** module |
+| List | Caption | Rows | Source |
+| --- | --- | --- | --- |
+| `Main` (4 slots, scrolls) | `Games` | one per game the **room** may play, `Play` / `Playing` in the state cell | `RoomLibrary.Playable()` — the catalog filtered by the union of every player's library. In a **public** room, reduced to the one locked game with a line saying why |
+| `Actions` (3 slots, scrolls) | `Room` | `Place Anchor`, `Passthrough`, then `Voice Chat` for the host only, then the loaded game's own keys | `GameModule.menuActions` of the **active scene's** module |
+
+**Both toggles show their state, and that is the rule, not a nicety.** `Passthrough` reads
+`PassthroughController.IsPassthroughOn()` and `Voice Chat` reads `RoomAnchor.voiceEnabled`; both put
+`ON`/`OFF` in the state cell and set `selected`. `Passthrough` was the one toggle that showed
+nothing, so pressing it was a coin toss.
+
+**`Place Anchor` is room-owner only and says so.** The check lives in `BoardAnchor.RequestPlaceAnchor`,
+which for anybody else logs and returns — so the row looked live, closed the menu and did nothing.
+It is now greyed with `Host only` for a non-owner.
+
+**The header carries the room code.** `MenuControl.RoomCode()` resolves `RelayVivox` off the
+`Network Manager` the way `VisibleWhenLooking` does, and the status line reads
+`Code ABC123 · <whatever else it had to say>`. Before this, the only way to read the code you needed
+to hand somebody was to notice the `InfoBlock` on your own right hand and stare at it.
 
 **`Passthrough` is now reachable.** `HandleKey` had handled it since it was written and nothing ever
 built a key for it — a live handler with no way to press it.
@@ -491,10 +551,12 @@ game, and adding one must not change that.** An unknown key is deliberately iner
 server-side — the room's public lock and `RoomLibrary.Union()` — and that is the enforcement, on the
 next line after the `GameRoutes` check that exists for the identical reason.
 
-**Known rough edge:** the rules wing and the game list both read `rightJoystick.y`
-(`ScrollTextWithJoystick` and `ScrollList`), so with more than five games in the catalog a joystick
-push scrolls both at once. Neither is destructive; fix it by giving `ScrollList` a modifier or by
-moving the rules panel onto a `ScrollList` of its own.
+**Three things once shared `rightJoystick.y` and moved together** — the rules wing
+(`ScrollTextWithJoystick`) and both `ScrollList`s. A list now scrolls only while the beam is inside
+its own viewport (`joystickNeedsHover`), which leaves the rules wing as the one thing a joystick
+push moves when the beam is anywhere else. `ScrollTextWithJoystick` also **no longer falls back to
+the left stick**: that is locomotion and snap-turn, so for a player who is not colocated, walking
+forward with the menu open scrolled the rules.
 
 This is **the room menu — not `SpawnMenu`**, the per-player piece menu on the left wrist, which is a
 separate prefab with its own key set and its own dispatcher (`PlateauSpawnMenu.HandleKey`). See

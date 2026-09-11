@@ -20,7 +20,14 @@ public class CodePad : MonoBehaviour
 {
     public const string BackKey = "Back";
     public const string ClearKey = "Clear";
-    public const string CancelKey = "Cancel";
+
+    /// <summary>
+    /// "Close", not "Cancel". These consts are the keyName *and* the visible label, and "Cancel" at
+    /// the authored 44 pt measures 137 units against a 132-unit key: it wrapped to a second line
+    /// that did not fit the 95-unit label box and the key read "Cance". "Close" is 105, the same as
+    /// "Clear". See docs/UIBugFixes.md §5.
+    /// </summary>
+    public const string CancelKey = "Close";
 
     public Panel panel;
     public RectTransform grid;

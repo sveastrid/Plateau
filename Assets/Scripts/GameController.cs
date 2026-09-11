@@ -114,7 +114,7 @@ public class GameController : MonoBehaviour
         }
         connectInFlight = true;
 
-        Say("Creating room...");
+        Say("Creating room…");
 
         try
         {
@@ -171,7 +171,7 @@ public class GameController : MonoBehaviour
         }
         connectInFlight = true;
 
-        Say("Joining room...");
+        Say("Joining room…");
 
         try
         {

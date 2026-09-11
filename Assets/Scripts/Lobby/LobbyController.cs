@@ -208,12 +208,20 @@ public class LobbyController : MonoBehaviour
 
         GameObject panel = Instantiate(prefab, position, Quaternion.identity, transform);
 
-        // A world-space Canvas is drawn on its +Z face, so the panel's forward has to point back at
-        // the player: 180 degrees from the camera's, plus the yaw that turns a panel sitting to one
-        // side in towards them rather than leaving it edge-on. The sign matters — the other way
-        // round turns it further away, which reads as a panel that is simply invisible.
+        // A world-space Canvas is read from its -Z side: the reader looks ALONG the text's own
+        // forward, which is why the standard billboard is forward = camera.forward and why
+        // LookAt(camera) mirrors text. So the panel's forward points AWAY from the player, exactly
+        // as PlayerControls does for the nametags and PlateauPieceView for the plateau counts.
+        //
+        // There used to be a further 180 here, on the theory that a Canvas "draws on its +Z face".
+        // It did two things, both wrong: it mirrored every glyph, and it turned the panel's good
+        // side away so the yaw below angled a side panel further out instead of in. See
+        // docs/UIBugFixes.md §1.
+        //
+        // The yaw turns a panel sitting to one side back in towards the player. Positive is to the
+        // player's right, which is the side `right` is measured on, so the two signs agree.
         panel.transform.rotation = Quaternion.LookRotation(forward, Vector3.up) *
-                                   Quaternion.Euler(0f, 180f + yaw, 0f);
+                                   Quaternion.Euler(0f, yaw, 0f);
         return panel;
     }
 
@@ -269,7 +277,7 @@ public class LobbyController : MonoBehaviour
         RowData row = new RowData(module.gameKey, module.DisplayName)
         {
             thumbnail = module.thumbnail,
-            subtitle = module.minPlayers + "-" + module.maxPlayers + " players",
+            subtitle = PlayerCount(module),
             selected = selected == module,
             payload = module,
         };
@@ -280,18 +288,30 @@ public class LobbyController : MonoBehaviour
         }
         else if (!module.isPaid)
         {
-            row.state = "Free — Add";
+            // The state cell says what pressing the row DOES, then what it costs. "Free — Add" read
+            // as a price with a stray word after it.
+            row.state = "Add — Free";
         }
         else
         {
             // The platform's formatted, localized price and nothing composed here. Until it has
             // arrived the row says so rather than showing a placeholder that looks like a price.
             string price = StoreService.PriceFor(module);
-            row.state = string.IsNullOrEmpty(price) ? "..." : price;
+            row.state = string.IsNullOrEmpty(price) ? "Price…" : price;
             row.pressable = !string.IsNullOrEmpty(price);
         }
 
         return row;
+    }
+
+    /// <summary>
+    /// "2 players", not "2-2 players" — Stairs is exactly two and the range read as a typo.
+    /// </summary>
+    private static string PlayerCount(GameModule module)
+    {
+        return module.minPlayers == module.maxPlayers
+                   ? module.minPlayers + " players"
+                   : module.minPlayers + "–" + module.maxPlayers + " players";
     }
 
     private void ShowDetail()
@@ -303,24 +323,29 @@ public class LobbyController : MonoBehaviour
 
         if (selected == null)
         {
-            library.SetDetail("Point at a game to see what it is.");
+            // Not "point at" — pointing highlights a row and does nothing else. The trigger is what
+            // selects, and the sentence has to say so or the panel looks inert.
+            library.SetDetail("Pick a game to read what it is.");
             return;
         }
 
-        string text = selected.blurb ?? "";
-
-        // The same TextAsset the in-room rules panel reads. One asset, two readers, and no second
-        // copy of the rules to drift out of step.
-        if (selected.rulesText != null)
-        {
-            text += (text.Length > 0 ? "\n\n" : "") + selected.rulesText.text;
-        }
-
-        library.SetDetail(text);
+        // The blurb and nothing else. This used to concatenate the whole rulesText asset — 2.5 to
+        // 5 KB — into a 1160 x 192 block with overflowMode Truncate, so the player got the blurb
+        // and two lines of rules cut off mid-word with no sign there was more. The rules have a
+        // home already, in the in-room panel MenuControl builds, which scrolls.
+        library.SetDetail(selected.blurb ?? "");
     }
 
     private async void HandleLibraryKey(string keyName)
     {
+        // The same latch the Play panel takes. A purchase landing mid-join redraws a panel that is
+        // about to be destroyed by the scene switch, and the library it would show is the one
+        // already sent in the connection approval payload.
+        if (busy)
+        {
+            return;
+        }
+
         GameCatalog catalog = GameCatalog.Instance;
         GameModule module = catalog != null ? catalog.ByKey(keyName) : null;
         if (module == null)
@@ -336,7 +361,7 @@ public class LobbyController : MonoBehaviour
             return;                           // already yours; selecting it is the whole action
         }
 
-        library.SetStatus("...");
+        library.SetStatus("Working…");
 
         if (!module.isPaid)
         {
@@ -397,14 +422,26 @@ public class LobbyController : MonoBehaviour
         bool canHostPublic = RoomDirectory.Instance != null && RoomDirectory.Instance.Available;
         bool haveGames = HostableGames().Count > 0;
 
+        // The state cell says what pressing the row does. Two of these used to be a bare ">", which
+        // is not a word, and the same bare ">" on both — so the two rows were indistinguishable
+        // once the row layout clipped their titles away. See docs/UIBugFixes.md §4.
         List<RowData> rows = new List<RowData>
         {
-            new RowData(NewPrivateKey, "New Private Room", "Host"),
-            new RowData(JoinPrivateKey, "Join Private Room", "Code"),
+            new RowData(NewPrivateKey, "New Private Room", "Start")
+            {
+                subtitle = "Play with whoever you give the code to",
+            },
+            new RowData(JoinPrivateKey, "Join Private Room", "Enter code")
+            {
+                subtitle = "Six characters, from whoever opened the room",
+            },
         };
 
-        RowData newPublic = new RowData(NewPublicKey, "New Public Room", ">");
-        RowData browse = new RowData(BrowsePublicKey, "Browse Public Rooms", ">");
+        RowData newPublic = new RowData(NewPublicKey, "New Public Room", "Choose game")
+        {
+            subtitle = "Listed for anyone who owns that game",
+        };
+        RowData browse = new RowData(BrowsePublicKey, "Browse Public Rooms", "Find a room");
 
         if (!canHostPublic)
         {
@@ -423,7 +460,10 @@ public class LobbyController : MonoBehaviour
 
         rows.Add(newPublic);
         rows.Add(browse);
-        rows.Add(new RowData(EditNameKey, "You are: " + playerName, "Change"));
+        rows.Add(new RowData(EditNameKey, "You are: " + playerName, "Change")
+        {
+            subtitle = "What the other players see over your head",
+        });
 
         Fill(rows);
     }
@@ -458,11 +498,12 @@ public class LobbyController : MonoBehaviour
             rows.Add(new RowData(module.gameKey, module.DisplayName, "Host")
             {
                 thumbnail = module.thumbnail,
-                subtitle = module.minPlayers + "-" + module.maxPlayers + " players",
+                subtitle = PlayerCount(module),
             });
         }
 
-        rows.Add(new RowData(BackKey, "Back", "<"));
+        // No "<" in the state cell: the word "Back" is the affordance and the arrow was noise.
+        rows.Add(new RowData(BackKey, "Back", ""));
         Fill(rows);
     }
 
@@ -510,15 +551,19 @@ public class LobbyController : MonoBehaviour
 
         if (rooms.Count == 0)
         {
-            rows.Add(new RowData("", "No public rooms right now", "") { pressable = false });
+            rows.Add(new RowData("", "No public rooms right now", "")
+            {
+                subtitle = "Anyone can open one from the New Public Room row",
+                pressable = false,
+            });
         }
 
         bool canRefresh = RoomDirectory.Instance != null && RoomDirectory.Instance.CanQuery;
-        rows.Add(new RowData(RefreshKey, "Refresh", canRefresh ? "" : "...")
+        rows.Add(new RowData(RefreshKey, "Refresh", canRefresh ? "" : "Refreshing…")
         {
             pressable = canRefresh
         });
-        rows.Add(new RowData(BackKey, "Back", "<"));
+        rows.Add(new RowData(BackKey, "Back", ""));
 
         Fill(rows);
     }
@@ -589,7 +634,7 @@ public class LobbyController : MonoBehaviour
                 return;
 
             case JoinPrivateKey:
-                OpenPad("Room Code", "Join", 6, "");
+                OpenPad("Room Code", "Join", JoinCodeLength, "", PadPurpose.JoinCode);
                 return;
 
             case NewPublicKey:
@@ -605,7 +650,7 @@ public class LobbyController : MonoBehaviour
                 return;
 
             case EditNameKey:
-                OpenPad("Your Name", "OK", 20, playerName);
+                OpenPad("Your Name", "OK", 20, playerName, PadPurpose.PlayerName);
                 return;
         }
     }
@@ -631,7 +676,7 @@ public class LobbyController : MonoBehaviour
             return;
         }
 
-        play.SetStatus("Looking for rooms...");
+        play.SetStatus("Looking for rooms…");
         rooms = await directory.QueryAsync();
 
         play.SetStatus(directory.Available ? "" : directory.LastError);
@@ -640,9 +685,20 @@ public class LobbyController : MonoBehaviour
 
     // ------------------------------------------------------------------ the code pad
 
-    private string padPurpose = "";
+    /// <summary>
+    /// What the open pad is for. This used to be the submit key's *label* compared against the
+    /// literal "Join", so two pads that happened to share a button word would have dispatched to
+    /// each other.
+    /// </summary>
+    private enum PadPurpose { None, JoinCode, PlayerName }
 
-    private void OpenPad(string title, string submitLabel, int maxChars, string seed)
+    /// <summary>Relay join codes are always six characters. RelayVivox does not vary this.</summary>
+    private const int JoinCodeLength = 6;
+
+    private PadPurpose padPurpose = PadPurpose.None;
+
+    private void OpenPad(string title, string submitLabel, int maxChars, string seed,
+                         PadPurpose purpose)
     {
         if (pad == null)
         {
@@ -650,7 +706,7 @@ public class LobbyController : MonoBehaviour
             return;
         }
 
-        padPurpose = submitLabel;
+        padPurpose = purpose;
         pad.Open(title, submitLabel, maxChars, seed);
     }
 
@@ -669,11 +725,15 @@ public class LobbyController : MonoBehaviour
             return;                           // Cancel
         }
 
-        if (padPurpose == "Join")
+        if (padPurpose == PadPurpose.JoinCode)
         {
-            if (value.Length == 0)
+            // The pad knows the length, so say so here rather than spending a Relay round trip to
+            // come back with "Wrong room code" for something that was never going to be one.
+            if (value.Length != JoinCodeLength)
             {
-                play.SetStatus("Enter a room code, or start a new room.");
+                play.SetStatus(value.Length == 0
+                                   ? "Enter a room code, or start a new room."
+                                   : "A room code is " + JoinCodeLength + " characters.");
                 return;
             }
 
@@ -697,7 +757,7 @@ public class LobbyController : MonoBehaviour
         }
 
         busy = true;
-        play.SetStatus("Creating room...");
+        play.SetStatus("Creating room…");
         connection.HostRoom(playerName);
     }
 
@@ -709,7 +769,7 @@ public class LobbyController : MonoBehaviour
         }
 
         busy = true;
-        play.SetStatus("Joining room...");
+        play.SetStatus("Joining room…");
         connection.JoinRoom(playerName, code);
     }
 

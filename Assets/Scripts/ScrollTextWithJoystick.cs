@@ -11,14 +11,11 @@ public class ScrollTextWithJoystick : MonoBehaviour
     {
         if (inputs == null || scrollRect == null) return;
 
-        // Use the right joystick Y axis to scroll
+        // Right joystick only. There used to be a fallback to the left stick whenever the right one
+        // was centred — and the left stick is locomotion and snap-turn (CameraController2), so for
+        // a player who is not colocated, walking forward with the room menu open also scrolled the
+        // rules. The right stick is the documented control; see Assets/Scripts/CLAUDE.md, Input.
         float scrollInput = inputs.rightJoystick.y;
-
-        // Fallback to left joystick if needed
-        if (Mathf.Abs(scrollInput) < 0.1f)
-        {
-            scrollInput = inputs.leftJoystick.y;
-        }
 
         if (Mathf.Abs(scrollInput) > 0.1f)
         {

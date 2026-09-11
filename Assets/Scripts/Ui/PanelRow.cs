@@ -29,9 +29,28 @@ public class PanelRow : MonoBehaviour
     public Color disabledTitleColor = new Color(0.55f, 0.58f, 0.63f, 1f);
     public Color selectedColor = new Color(0.18f, 0.50f, 0.36f, 0.98f);
 
+    [Tooltip("While the trigger is held on this row. keyInfo.MakeBigger cannot do this job on a " +
+             "full-width row — it pushes the row into the viewport mask and over its neighbour.")]
+    public Color pressedColor = new Color(0.10f, 0.28f, 0.42f, 1f);
+
+    // These four are the authored 76-tall row. The serialized value on the prefab is what actually
+    // runs — see CLAUDE.md, "a serialized value wins over the field initializer" — so these match
+    // it rather than being a second, quietly different opinion.
+    [Header("Text placement, UI units")]
+    [Tooltip("Title Y with a subtitle under it, and without. A one-line row centres its title, or " +
+             "every room-menu row sits high in its bar with a blank strip underneath.")]
+    public float titleYWithSubtitle = -4f;
+    public float titleYAlone = -18f;
+
+    [Tooltip("Text X with a thumbnail beside it, and without. A module with no thumbnail would " +
+             "otherwise keep the indent, and an indent with a hole in it reads as a broken row.")]
+    public float textXWithThumb = 96f;
+    public float textXNoThumb = 20f;
+
     private BoxCollider box;
     private Color authoredOffColor;
     private bool authoredCaptured;
+    private bool pressed;
 
     /// <summary>The data this slot is currently showing, or null while the slot is empty.</summary>
     public RowData Data { get; private set; }
@@ -72,6 +91,7 @@ public class PanelRow : MonoBehaviour
     {
         CaptureAuthored();
         Data = row;
+        pressed = false;
 
         if (row == null)
         {
@@ -120,6 +140,8 @@ public class PanelRow : MonoBehaviour
             thumbnail.enabled = row.thumbnail != null;
         }
 
+        LayOutText(row);
+
         // An unpressable row loses its collider rather than keeping it and refusing later. The beam
         // then does not stop on it and the trigger does nothing, which reads as "not available"
         // without any code having to explain itself.
@@ -127,6 +149,57 @@ public class PanelRow : MonoBehaviour
         {
             box.enabled = row.pressable;
         }
+    }
+
+    /// <summary>
+    /// The two things about a row that depend on what is in it: the text column starts where the
+    /// thumbnail ends, or at the margin when there is no thumbnail; and the title centres itself
+    /// vertically when there is no subtitle under it.
+    /// </summary>
+    private void LayOutText(RowData row)
+    {
+        float x = row.thumbnail != null ? textXWithThumb : textXNoThumb;
+        bool twoLine = !string.IsNullOrEmpty(row.subtitle);
+
+        if (title != null)
+        {
+            RectTransform rt = title.rectTransform;
+            rt.anchoredPosition = new Vector2(x, twoLine ? titleYWithSubtitle : titleYAlone);
+        }
+
+        if (subtitle != null)
+        {
+            RectTransform rt = subtitle.rectTransform;
+            rt.anchoredPosition = new Vector2(x, rt.anchoredPosition.y);
+        }
+    }
+
+    /// <summary>
+    /// Held-down feedback, driven by Panel. It rides on the background rather than on the scale,
+    /// and it is deliberately not keyInfo's on/off pair — the beam's hover tint owns those, and a
+    /// press that fought the hover would flicker while the trigger is down.
+    /// </summary>
+    public void ShowPressed(bool down)
+    {
+        if (pressed == down || key == null)
+        {
+            return;
+        }
+
+        pressed = down;
+
+        if (down)
+        {
+            if (background != null)
+            {
+                background.color = pressedColor;
+            }
+            return;
+        }
+
+        // Not "back to onColor": the trigger may have come up with the beam still on this row or
+        // halfway down the list, and keyInfo is the thing that knows which.
+        key.RefreshTint();
     }
 
     /// <summary>Hide the slot. Used for the tail of a list shorter than its slot count.</summary>

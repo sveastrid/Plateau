@@ -55,8 +55,14 @@ lobby's `Cancelled` branch deliberately clears the status line and says nothing.
 **Prices are a store-compliance point, not a display detail.** Meta returns a price formatted in the
 viewer's currency; a hardcoded `"$4.99"` is wrong for most of the planet and review catches it.
 `GameModule.mockPriceLabel` exists so the mock can render *something*, and `MetaEntitlementService`
-must overwrite it — never fall back to it. A paid row whose price has not arrived shows `...` and is
-not pressable, rather than showing a placeholder that looks like a price.
+must overwrite it — never fall back to it. A paid row whose price has not arrived shows `Price…` and
+is not pressable, rather than showing a placeholder that looks like a price.
+
+**The state cell says what pressing the row does, then what it costs** — `Add — Free`, not
+`Free — Add`, which read as a price with a stray word after it. An owned row says `In Library`. The
+Library panel's detail block shows the **blurb only**: it used to concatenate the whole `rulesText`
+asset into a block that truncates after about six lines, so the player got the blurb and two lines
+of rules cut off mid-word. The rules have a home already, in the scrolling in-room panel.
 
 ## Two identities per game, and neither is the catalog index
 

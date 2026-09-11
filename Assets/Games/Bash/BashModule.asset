@@ -27,7 +27,7 @@ MonoBehaviour:
   displayName: BASH
   blurb: Four islands in a square of water. Spin-aim your gamepieces, lob artillery
     over the walls, and knock everybody else in.
-  thumbnail: {fileID: 0}
+  thumbnail: {fileID: 21300000, guid: c82f0081d80d7334c9636ded7588d679, type: 3}
   isPaid: 0
   metaSku: 
   mockPriceLabel: 

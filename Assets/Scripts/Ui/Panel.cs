@@ -50,6 +50,9 @@ public class Panel : MonoBehaviour
             if (lists[i] != null)
             {
                 lists[i].inputs = reader;
+                // The beam too, so a list can tell whether the joystick is meant for it. Two lists
+                // on this panel and the rules wing beside it all read the same axis.
+                lists[i].pointer = beam;
             }
         }
     }
@@ -79,11 +82,25 @@ public class Panel : MonoBehaviour
         status.gameObject.SetActive(!string.IsNullOrEmpty(text));
     }
 
+    /// <summary>
+    /// The prose block. It occupies the same band as the second list — there is no room on a
+    /// 1200 x 900 canvas for both, and no surface has ever wanted both: the lobby's Library panel
+    /// uses the detail block and no action list, the room menu the reverse. Say so out loud if one
+    /// ever does, rather than silently drawing them on top of each other.
+    /// </summary>
     public void SetDetail(string text)
     {
         if (detail == null)
         {
             return;
+        }
+
+        if (!string.IsNullOrEmpty(text) && lists.Length > 1 && lists[1] != null &&
+            lists[1].Rows.Count > 0)
+        {
+            Debug.LogWarning("Panel " + name + ": the detail block and list 1 both have content " +
+                             "and they share the same rect, so one is drawn over the other. Give " +
+                             "the panel more height, or move one of them.");
         }
 
         detail.SetText(text ?? "");
@@ -109,6 +126,7 @@ public class Panel : MonoBehaviour
             {
                 pressedKey = pointer.currentKey;
                 pressedKey.MakeBigger();
+                Press(pressedKey, true);
             }
             return;
         }
@@ -116,6 +134,7 @@ public class Panel : MonoBehaviour
         if (inputs.RightMainTriggerUp && pressedKey != null)
         {
             pressedKey.MakeSmaller();
+            Press(pressedKey, false);
 
             // Read the name off the object that was pressed, not off whatever the beam is touching
             // now: the trigger may have been released somewhere else entirely.
@@ -149,11 +168,27 @@ public class Panel : MonoBehaviour
         return t != null && t.IsChildOf(transform);
     }
 
+    /// <summary>
+    /// Pressed-down feedback for a full-width Canvas row, which cannot use keyInfo.MakeBigger:
+    /// growing a 1160-unit row by 20% pushes 116 units off each side into the viewport mask and
+    /// 19 units down over the next row, which reads as a glitch rather than as feedback. A 3D key
+    /// still grows — keyInfo.growOnPress is what decides, per key.
+    /// </summary>
+    private static void Press(keyInfo key, bool down)
+    {
+        PanelRow row = key != null ? key.GetComponent<PanelRow>() : null;
+        if (row != null)
+        {
+            row.ShowPressed(down);
+        }
+    }
+
     void OnDisable()
     {
         if (pressedKey != null)
         {
             pressedKey.MakeSmaller();
+            Press(pressedKey, false);
             pressedKey = null;
         }
     }
