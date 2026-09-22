@@ -26,6 +26,10 @@ using UnityEngine.SceneManagement;
 ///    key for it — a live handler with no way to press it.
 ///  - **X no longer opens the menu in the lobby**, where it resolved no local player, warned, and
 ///    would now open an empty list.
+///  - **The rules left the menu entirely.** BuildRulesPanel built the rules as a wing off this
+///    panel and CloseMenu destroyed it, so the rules were reachable only by knowing X exists and
+///    only while the menu was in front of the board. They are now RulesBoard, present for the whole
+///    game; the Rules row here only brings it back when it has been dragged out of reach.
 ///
 /// Nothing in this class names a game, and adding one must never change that.
 /// </summary>
@@ -59,9 +63,11 @@ public class MenuControl : MonoBehaviour
     private const string VoiceKey = "Voice Chat";
     private const string PassthroughKey = "Passthrough";
     private const string PlaceAnchorKey = "Place Anchor";
+    private const string RulesKey = "Rules";
 
     private GameObject currentMenu;
     private Panel currentPanel;
+    private RulesBoard rules;
 
     /// <summary>
     /// True while the menu is up. Read by anything that also wants the right trigger — the menu
@@ -82,6 +88,29 @@ public class MenuControl : MonoBehaviour
     {
         SceneManager.activeSceneChanged += HandleActiveSceneChanged;
         AdoptSceneDefaults();
+        EnsureRulesBoard();
+    }
+
+    /// <summary>
+    /// The rules board lives on this object because everything it needs — the Input Reader, the
+    /// camera and the pointer — is already resolved here, and because Menu Manager is part of
+    /// PersistentRig, so it survives the scene switches the board has to follow.
+    ///
+    /// Added at runtime when it is not authored, the way PassthroughController.EnsureOvrComponents
+    /// adds a missing OVRManager: authoring it on PersistentRig.prefab is preferred and is the only
+    /// way to tune its fields in the Inspector, but nothing breaks if that has not been done.
+    /// </summary>
+    private RulesBoard EnsureRulesBoard()
+    {
+        if (rules == null)
+        {
+            rules = GetComponent<RulesBoard>();
+        }
+        if (rules == null)
+        {
+            rules = gameObject.AddComponent<RulesBoard>();
+        }
+        return rules;
     }
 
     void OnDestroy()
@@ -168,7 +197,7 @@ public class MenuControl : MonoBehaviour
 
         if (currentMenu == null)
         {
-            OpenMenu1(true);
+            OpenMenu1();
         }
         else
         {
@@ -177,7 +206,7 @@ public class MenuControl : MonoBehaviour
     }
 
     /// <summary>
-    /// Three keys belong to the room itself and are handled here. Everything else belongs to a
+    /// Four keys belong to the room itself and are handled here. Everything else belongs to a
     /// game: either it names one in the catalog, in which case it is a game switch, or it is one of
     /// the loaded game's own menuActions and goes to that game's IGameSession.
     ///
@@ -217,6 +246,13 @@ public class MenuControl : MonoBehaviour
                     Debug.LogWarning("MenuControl: no BoardAnchor, so there is nothing to place. " +
                                      "It belongs on the Network Manager object.");
                 }
+                CloseMenu();
+                return;
+
+            case RulesKey:
+                // Not a game's key even though it shows a game's text: the board is a fixture of
+                // the room like the pointer, and the text it shows comes from GameCatalog.
+                EnsureRulesBoard().Recall();
                 CloseMenu();
                 return;
         }
@@ -259,7 +295,7 @@ public class MenuControl : MonoBehaviour
         selector.RequestGame(gameKey);
     }
 
-    public void OpenMenu1(bool showRules = false)
+    public void OpenMenu1()
     {
         if (roomMenu == null || myCam == null)
         {
@@ -276,7 +312,7 @@ public class MenuControl : MonoBehaviour
         //    and Assets/Scripts/Stairs/CLAUDE.md, "TMP is read from its -Z side".
         //  - myCam.rotation carried the head's pitch, so a menu opened while looking down at the
         //    board came up tipped — and the rules wing beside it is placed off a flattened axis
-        //    (BuildRulesPanel), so the two ended up in different planes.
+        //    (RulesBoard.FacePlayer), so the two ended up in different planes.
         Vector3 flat = myCam.forward;
         flat.y = 0f;
         flat = flat.sqrMagnitude > 0.0001f ? flat.normalized : Vector3.forward;
@@ -301,11 +337,6 @@ public class MenuControl : MonoBehaviour
         currentPanel.KeyPressed += HandleKey;
 
         BuildRows();
-
-        if (showRules)
-        {
-            BuildRulesPanel(currentMenu);
-        }
 
         if (worldRoot != null)
         {
@@ -456,6 +487,11 @@ public class MenuControl : MonoBehaviour
             },
         };
 
+        rows.Add(new RowData(RulesKey, RulesKey, "")
+        {
+            subtitle = "Bring the rules back in front of you",
+        });
+
         // Voice is a room-wide billed service, so only the host is offered the switch. That used to
         // be the entire reason there were two menu prefabs.
         if (owner)
@@ -485,108 +521,6 @@ public class MenuControl : MonoBehaviour
         }
 
         list.SetData(rows);
-    }
-
-    // ------------------------------------------------------------------ the rules panel
-
-    /// <summary>
-    /// The scrollable rules panel beside the menu, built procedurally rather than from a prefab.
-    ///
-    /// The text is the loaded game's GameModule.rulesText — a direct asset reference. It used to be
-    /// a Resources.Load keyed off an if/else over scene names whose fall-through was "BASHRules",
-    /// so a game that was not one of the three showed BASH's rules with no warning.
-    /// </summary>
-    private void BuildRulesPanel(GameObject menu)
-    {
-        GameModule module = GameCatalog.ActiveModule;
-
-        GameObject rulesCanvasGo = new GameObject("RulesCanvas");
-
-        Canvas canvas = rulesCanvasGo.AddComponent<Canvas>();
-        canvas.renderMode = RenderMode.WorldSpace;
-        RectTransform canvasRt = rulesCanvasGo.GetComponent<RectTransform>();
-        canvasRt.sizeDelta = new Vector2(800, 800);
-        // 1 UI unit = 1 mm, the toolkit's convention. This panel used to be at 0.002 and Text Input
-        // at 0.01, which is exactly how panels end up subtly different sizes.
-        canvasRt.localScale = new Vector3(0.001f, 0.001f, 0.001f);
-
-        // A wing beyond the menu's left, nearer the player and turned back in towards them rather
-        // than lying flat alongside it.
-        //
-        // Placed in WORLD space off the camera and then parented keeping that pose, rather than in
-        // menu-local coordinates. Two things made the old menu-local offsets wrong: the menu root is
-        // now flipped 180 degrees to face the player, so its local X and Z both run backwards, and
-        // it is itself a Canvas at scale 0.001, so menu-local units are millimetres. Setting the
-        // scale before parenting and passing worldPositionStays leaves both to Unity.
-        Vector3 flat = myCam.forward;
-        flat.y = 0f;
-        flat = flat.sqrMagnitude > 0.0001f ? flat.normalized : Vector3.forward;
-        Vector3 rightAxis = Vector3.Cross(Vector3.up, flat);
-
-        rulesCanvasGo.transform.position = myCam.position + flat * (menuDistance - 0.55f) +
-                                           rightAxis * -(menuLeftOffset + 0.6f);
-        // -40, not 180-40: the panel's forward points away from the reader (see OpenMenu1), and the
-        // negative yaw turns a wing sitting to the player's left back in towards them.
-        rulesCanvasGo.transform.rotation = Quaternion.LookRotation(flat, Vector3.up) *
-                                           Quaternion.Euler(0f, -40f, 0f);
-        rulesCanvasGo.transform.SetParent(menu.transform, true);
-
-        // A dark background so the text is readable against passthrough.
-        UnityEngine.UI.Image bgImage = rulesCanvasGo.AddComponent<UnityEngine.UI.Image>();
-        bgImage.color = new Color(0, 0, 0, 0.85f);
-
-        GameObject viewportGo = new GameObject("Viewport");
-        viewportGo.transform.SetParent(rulesCanvasGo.transform, false);
-        RectTransform viewportRt = viewportGo.AddComponent<RectTransform>();
-        viewportRt.anchorMin = Vector2.zero;
-        viewportRt.anchorMax = Vector2.one;
-        viewportRt.sizeDelta = Vector2.zero;
-        viewportRt.pivot = new Vector2(0.5f, 0.5f);
-
-        viewportGo.AddComponent<UnityEngine.UI.RectMask2D>();
-
-        GameObject contentGo = new GameObject("Content");
-        contentGo.transform.SetParent(viewportGo.transform, false);
-        RectTransform contentRt = contentGo.AddComponent<RectTransform>();
-        contentRt.anchorMin = new Vector2(0, 1);
-        contentRt.anchorMax = new Vector2(1, 1);
-        contentRt.pivot = new Vector2(0.5f, 1);
-        contentRt.sizeDelta = new Vector2(0, 2000);
-        contentRt.anchoredPosition = Vector2.zero;
-
-        TMPro.TextMeshProUGUI text = contentGo.AddComponent<TMPro.TextMeshProUGUI>();
-        text.fontSize = 24;
-        text.color = Color.white;
-        text.margin = new Vector4(20, 20, 20, 20);
-
-        if (module != null && module.rulesText != null)
-        {
-            text.text = module.rulesText.text;
-        }
-        else if (module != null)
-        {
-            text.text = "No rules asset is set on " + module.name + ".";
-        }
-        else
-        {
-            text.text = "";
-        }
-
-        UnityEngine.UI.ContentSizeFitter csf = contentGo.AddComponent<UnityEngine.UI.ContentSizeFitter>();
-        csf.verticalFit = UnityEngine.UI.ContentSizeFitter.FitMode.PreferredSize;
-
-        UnityEngine.UI.ScrollRect scrollRect = rulesCanvasGo.AddComponent<UnityEngine.UI.ScrollRect>();
-        scrollRect.content = contentRt;
-        scrollRect.viewport = viewportRt;
-        scrollRect.horizontal = false;
-        scrollRect.vertical = true;
-        scrollRect.movementType = UnityEngine.UI.ScrollRect.MovementType.Clamped;
-        scrollRect.scrollSensitivity = 15f;
-
-        ScrollTextWithJoystick scroller = rulesCanvasGo.AddComponent<ScrollTextWithJoystick>();
-        scroller.scrollRect = scrollRect;
-        scroller.inputs = inputs;
-        scroller.scrollSpeed = 1.5f;
     }
 
     // ------------------------------------------------------------------ the rest

@@ -237,7 +237,7 @@ where the server validates the key against `GameRoutes` (**never** hand a client
 running.** Full flow, including what survives the switch and what rebinds around it:
 [Session flow](Assets/Scripts/CLAUDE.md#session-flow).
 
-Fourteen components carry a load-bearing `[DefaultExecutionOrder]` (−10, 10, 15, 20, 23, 24, 25, 30).
+Fifteen components carry a load-bearing `[DefaultExecutionOrder]` (−10, 10, 15, 20, 23, 24, 25, 30).
 The chain puts everything that *reads* a world pose after everything that *writes* one — the table is
 in [the shared systems doc](Assets/Scripts/CLAUDE.md#execution-order-contract).
 
@@ -336,7 +336,10 @@ references** to their viewport, row template, arrows and counter, so a rename is
 Inspector and each logs an error naming the missing slot rather than opening empty. The one thing
 still matched as a string is `keyInfo.keyName`, which is the point of the whole dispatch model.
 `ScrollList.ScrollUpKey` / `ScrollDownKey` (`"ScrollUp"` / `"ScrollDown"`) are consumed by the list
-that owns them before any panel sees them, so a row must never use those as an id.
+that owns them before any panel sees them, so a row must never use those as an id. Four more names
+are spoken for the same way: **`Rules`** (`MenuControl`'s own row) and `RulesMove`, `RulesToggle` and
+`RulesBody` (`RulesBoard`'s three widgets). A `GameModule.menuActions` entry using any of them would
+be eaten before the game ever saw it.
 
 **Sibling order under `Plateaus` is the plateau index.** Reordering those 41 children renumbers the
 whole board, and the numbers are on the wire. Adding one at the end is safe.
@@ -434,6 +437,7 @@ are marked applied, corrected, or out of scope — **check the code before trust
 | [`BASHRules.md`](docs/BASHRules.md) | BASH's rules. |
 | [`stepsRules.md`](docs/stepsRules.md) | Stairs' rules. **Implemented**, with the turn order deliberately removed — see `bugFixesStairsGame.md` §1. The readings taken where it is ambiguous are listed in [`Assets/Scripts/Stairs/CLAUDE.md`](Assets/Scripts/Stairs/CLAUDE.md). |
 | [`LobbyUpdate.md`](docs/LobbyUpdate.md) | **Applied, steps 1–14.** Replacing the lobby keyboard with two panels — a game library with a mock store, and room create/join for private and public rooms — plus the room menu becoming a scrollable list. §14 records where it came out differently from the plan and what is still untested. **Step 15 (the Meta Platform SDK) is deliberately not done**: the package is not installed and `MetaEntitlementService` has never compiled. |
+| [`rulesUIUpdate.md`](docs/rulesUIUpdate.md) | **Applied.** The rules leaving the room menu and becoming an always-present, draggable, minimisable board. |
 | [`UIBugFixes.md`](docs/UIBugFixes.md) | **Applied, §1–§9.** Everything that was wrong with the panel toolkit, measured in the Editor. The three that mattered: a 180° flip on every panel that mirrored its text *and* turned it away from the player; every list row's thumbnail, title and subtitle sitting 580 units left of the viewport where the mask ate them, leaving blank bars; and an action list with two slots for up to five rows and no arrows, which made `Voice Chat` and every game action unreachable. Then the wording, the `Cance` key, the emoji boxes in two rules files, and the design pass. Its §10 records what was verified and what is left for a headset. |
 | [`BASHUpdate.md`](docs/BASHUpdate.md) | **Applied.** Porting BASH in as a third game: GUID collisions, the world-space → `World Root` local conversion, the scene to build. §14 records where the port differed from the plan. |
 | [`BASHRulesUpdate.md`](docs/BASHRulesUpdate.md) | **Applied.** The rules rework that replaced BASH's joystick-steered shot with spin-aimed movement plus the boat/plane artillery arc. |

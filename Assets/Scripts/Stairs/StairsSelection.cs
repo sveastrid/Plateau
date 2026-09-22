@@ -201,6 +201,16 @@ public class StairsSelection : MonoBehaviour
             return;
         }
 
+        // A UI surface is not a board square. Cells are resolved from where the ray LANDED and not
+        // from what it hit, and TryCellAt ignores y — so any collider between the player and the
+        // board maps to whatever cell is under it. That was harmless while the only panels were the
+        // room menu and its rules wing, both of which also set menu.IsOpen and stood Playable()
+        // down; the rules board (RulesBoard) is present the whole game and does not.
+        if (beam.Hit.collider.CompareTag("key"))
+        {
+            return;
+        }
+
         piece = beam.Hit.collider.GetComponentInParent<StairsPieceTag>();
         if (piece != null)
         {

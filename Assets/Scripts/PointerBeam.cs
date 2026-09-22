@@ -97,15 +97,6 @@ public class PointerBeam : MonoBehaviour
 
         float length = DefaultLength;
 
-        if (keys != null && keys.currentKey != null)
-        {
-            Collider keyCollider = keys.currentKey.GetComponent<Collider>();
-            if (keyCollider != null)
-            {
-                length = Mathf.Min(length, Vector3.Distance(Origin, keyCollider.ClosestPoint(Origin)));
-            }
-        }
-
         if (HasHit)
         {
             length = Mathf.Min(length, Hit.distance);

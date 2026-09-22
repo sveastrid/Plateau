@@ -178,6 +178,14 @@ differently, and the two must not be assumed to match.
   resolved off the hit itself — so what **`Board`'s collider** actually catches is the 1 cm gaps
   between them and anything overhanging the edge. `Bake` logs an error if it goes missing; the
   wording there overstates the damage, since a ray landing squarely on a bare cell still resolves.
+- **A collider tagged `key` is refused before the lattice mapping**, and that is what makes a UI
+  surface safe to leave hanging over the board. Because a cell comes from where the ray *landed* and
+  `TryCellAt` ignores y entirely, anything between the player and the board otherwise resolves to
+  whatever cell sits underneath it — so hovering the rules would light a square and the trigger
+  would place a pawn. That was harmless while the only panels were the room menu and its rules wing,
+  both of which set `MenuControl.IsOpen` and stood `Playable()` down; `RulesBoard` is present for the
+  whole game and does not. Chasms and BASH need no equivalent: they resolve through a component or a
+  tag on the collider that was hit, and a rules key carries neither.
 - Rounding to the nearest lattice point rather than testing each cell's footprint snaps the 1 cm gaps
   between cells to the nearer of the two, so a drag never dies in the cracks.
 

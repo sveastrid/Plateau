@@ -260,7 +260,7 @@ just placed.
 
 ### Execution-order contract
 
-Fourteen components carry `[DefaultExecutionOrder]` and the values are load-bearing. The whole chain
+Fifteen components carry `[DefaultExecutionOrder]` and the values are load-bearing. The whole chain
 exists to put everything that *reads* a world pose after everything that *writes* one:
 
 | Order | Component | Why |
@@ -272,6 +272,7 @@ exists to put everything that *reads* a world pose after everything that *writes
 | **20** | `PlayerControls`, `WorldGrab` | sample head/hand world poses **after** the rig has moved; at order 0 every pose broadcast is a frame stale (~13 ms at 72 Hz) on top of network latency |
 | **20** | `StairsView` | reconciles Stairs' pieces after the frame has been placed and before `StairsSelection` lights them. (Chasms' equivalent is at 30 instead; both work, because the billboard that wanted the late slot is in `LateUpdate` either way) |
 | **23** | `PlateauSpawnMenu` | so `IsOpenOrOpening` is up to date before `PlateauSelection` reads it. Ordering is no longer what protects the selection — `IsOpenOrOpening` is, because the 0.15 s open debounce leaves the menu "closed" for ~10 frames after the grip goes down |
+| **23** | `RulesBoard` | moves the rules board's colliders, so it must run before `PointerBeam`'s `Physics.SyncTransforms()`; at any later order the beam tests last frame's position while you drag |
 | **24** | `PointerBeam` | one `Physics.SyncTransforms()` + one raycast, after the rig and the board have both settled |
 | **25** | `PlateauSelection`, `PlateauChooser`, `ControlListener`, `StairsSelection` | all four consume the hit `PointerBeam` produced this same frame. They are peers and none depends on the others — `PlateauChooser` and `PlateauSelection` are ChasmGame, `ControlListener` is BASH, `StairsSelection` is StairsGame, and no two of them are ever in the same scene |
 | **30** | `PlateauPieceView` | reconciles pieces; its `LateUpdate` billboard needs the final `World Root` pose |
@@ -397,8 +398,9 @@ exist for that and is gone. There is a fallback to finding `Username`/`ScoreTag`
 
 ## Menus, pointer, keys
 
-Three surfaces — the lobby's two canvases, the code pad, and the in-room menu — are one toolkit
-(`Assets/Scripts/Ui/`) drawn on world-space Canvases. **Canvas for pixels, colliders for presses.**
+Four surfaces — the lobby's two canvases, the code pad, the in-room menu and the rules board — are
+one toolkit (`Assets/Scripts/Ui/`) drawn on world-space Canvases. **Canvas for pixels, colliders for
+presses.**
 
 There is deliberately **no `EventSystem`-driven uGUI input module**, and adding one is the wrong
 move. `OpeningScene` still carries an `EventSystem` root; it drives nothing. A ray-driven module is
@@ -419,11 +421,15 @@ pressable here already has a working path: `PointerBeam` (order 24, after its ow
 | `RowData` | What a row says, plus the **stable id** it acts on. |
 | `ScrollList` | N fixed slots plus a scroll offset, an optional caption, arrows and a counter. |
 | `CodePad` | A 6 × 6 grid of `A-Z 0-9` plus `Back`, `Clear`, `Close` and a submit key, generated from an inactive template. |
+| `RulesBoard` | The always-present rules Canvas: a draggable, minimisable board built in code on `Menu Manager`. Uses `Panel` purely as the press model — no header, no lists. |
 
 **`1 UI unit = 1 mm`, `localScale 0.001`, everywhere.** A 1.2 m × 0.9 m panel is
 `sizeDelta (1200, 900)` and an 84-unit row pitch is 8.4 cm — legible at 1.6 m. The project used to
 have two conventions in play at once (`Text Input` at 0.01, the rules panel at 0.002), which is
-exactly how panels end up subtly different sizes. `BuildRulesPanel` was moved onto this one.
+exactly how panels end up subtly different sizes. `RulesBoard` builds its Canvas in code and holds
+the convention there — its `Width`/`ExpandedHeight`/`HeaderHeight` consts are millimetres, and its
+84-unit header is deliberately the toolkit's row pitch, so the minimised card is exactly one row
+tall.
 
 **One type scale, and one sprite.** Header 44, status / detail 26, caption 22, row title 32, row
 subtitle 24, row state 28 — `Panel.prefab` and `CodePad.prefab` are separate prefabs and had already
@@ -451,8 +457,11 @@ player's right, negative to their left.
 Panels are placed off a **flattened** forward, not off `myCam.rotation`. The camera's pitch used to
 ride along, so a menu opened while looking down at the board came up tipped while the rules wing
 beside it — placed off a flattened axis all along — stayed level, and the two sat in different
-planes. The rules wing is still placed in **world** space and then parented with
-`worldPositionStays`, rather than in menu-local coordinates, which are millimetres.
+planes. The rules board is never parented to anything: it is its own `DontDestroyOnLoad` root, and
+`RulesBoard.FacePlayer` derives its yaw from where the board actually *is* relative to the camera —
+`LookRotation(flatten(boardPos − camPos))` — so a board dragged off to either side turns back in
+towards the player with no hand-tuned angle. The wing's `−40°` was that angle, and it was only ever
+right for a panel that never moved.
 
 **`ScrollList` recycles, and that is a correctness property, not an optimisation.** A `RectMask2D`
 clips *pixels*, not colliders, so the naive "tall content, slide the content" list leaves rows you
@@ -523,7 +532,7 @@ Rows are built on open, into the panel's **two** lists:
 | List | Caption | Rows | Source |
 | --- | --- | --- | --- |
 | `Main` (4 slots, scrolls) | `Games` | one per game the **room** may play, `Play` / `Playing` in the state cell | `RoomLibrary.Playable()` — the catalog filtered by the union of every player's library. In a **public** room, reduced to the one locked game with a line saying why |
-| `Actions` (3 slots, scrolls) | `Room` | `Place Anchor`, `Passthrough`, then `Voice Chat` for the host only, then the loaded game's own keys | `GameModule.menuActions` of the **active scene's** module |
+| `Actions` (3 slots, scrolls) | `Room` | `Place Anchor`, `Passthrough`, `Rules`, then `Voice Chat` for the host only, then the loaded game's own keys | `GameModule.menuActions` of the **active scene's** module |
 
 **Both toggles show their state, and that is the rule, not a nicety.** `Passthrough` reads
 `PassthroughController.IsPassthroughOn()` and `Voice Chat` reads `RoomAnchor.voiceEnabled`; both put
@@ -542,7 +551,13 @@ to hand somebody was to notice the `InfoBlock` on your own right hand and stare 
 **`Passthrough` is now reachable.** `HandleKey` had handled it since it was written and nothing ever
 built a key for it — a live handler with no way to press it.
 
-`HandleKey` knows exactly three keys — `Passthrough`, `Voice Chat`, `Place Anchor`. Anything else is
+**`Rules` is a recovery, not the way to read the rules.** The rules are a permanent fixture now
+(`RulesBoard`, in the toolkit table above); this row expands the board and puts it back in front of
+you, for when it has been dragged somewhere you cannot reach. It is a room key rather than a game
+key even though it shows a game's text, because the board belongs to the room like the pointer does
+and the text comes from `GameCatalog.ActiveModule`.
+
+`HandleKey` knows exactly four keys — `Passthrough`, `Voice Chat`, `Place Anchor`, `Rules`. Anything else is
 either a game key (`GameRoutes.IsGameKey` → `GameSelector.RequestGame`) or the loaded game's own
 action, handed to `GameSessionRegistry.Active.InvokeMenuAction`. **Nothing in `MenuControl` names a
 game, and adding one must not change that.** An unknown key is deliberately inert and logs.
@@ -551,12 +566,15 @@ game, and adding one must not change that.** An unknown key is deliberately iner
 server-side — the room's public lock and `RoomLibrary.Union()` — and that is the enforcement, on the
 next line after the `GameRoutes` check that exists for the identical reason.
 
-**Three things once shared `rightJoystick.y` and moved together** — the rules wing
-(`ScrollTextWithJoystick`) and both `ScrollList`s. A list now scrolls only while the beam is inside
-its own viewport (`joystickNeedsHover`), which leaves the rules wing as the one thing a joystick
-push moves when the beam is anywhere else. `ScrollTextWithJoystick` also **no longer falls back to
-the left stick**: that is locomotion and snap-turn, so for a player who is not colocated, walking
-forward with the menu open scrolled the rules.
+**Three things once shared `rightJoystick.y` and moved together** — the rules text
+(`ScrollTextWithJoystick`) and both `ScrollList`s. **All three now gate on hover**
+(`joystickNeedsHover`, default on in both components), so the stick drives only the surface the beam
+is resting on and is **unclaimed when the beam is on neither a list nor the rules** — which is what
+lets Chasms keep it for the move count and BASH for the artillery aim. The gate stopped being
+optional the moment the rules left the menu: the wing existed only while the menu was open, and the
+board is there for the whole game, so an ungated scroller would have fought a game control on every
+shot. `ScrollTextWithJoystick` also **no longer falls back to the left stick**: that is locomotion
+and snap-turn, so for a player who is not colocated, walking forward scrolled the rules.
 
 This is **the room menu — not `SpawnMenu`**, the per-player piece menu on the left wrist, which is a
 separate prefab with its own key set and its own dispatcher (`PlateauSpawnMenu.HandleKey`). See
@@ -702,6 +720,7 @@ Control map as it stands:
 | Input | Effect |
 | --- | --- |
 | Right trigger | select a menu / keyboard key; in Chasms, select a piece or a destination plateau or spin the chooser; in BASH, select one of your gamepieces; in Stairs, **held** it drags a pawn or a step onto the board — or lifts a tile already laid, to re-lay it — and **tapped** it selects your pawn, takes a move, or presses End Turn |
+| Right trigger **held on the rules title bar** | drag the rules board; the right stick pushes it nearer and further while held |
 | Left trigger | BASH only: fire — lob the arc, then commit the spin-aimed movement line |
 | `X` | open / close the room menu — **in a game scene only**; it does nothing in the lobby |
 | `A` | re-align to the room anchor (`BoardAnchor.RequestReAlign`) |
